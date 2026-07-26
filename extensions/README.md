@@ -50,3 +50,6 @@ need it and maintainers agree on the shared contract.
 - `rss-feeds`: full RSS/Atom reader — categorized subscriptions, keyword
   filters, full-text search, cross-device read tracking, and optional
   free/local AI summaries, all via a local loopback sidecar.
+- `auto-list`: continue Markdown lists in the composer as you type — Enter
+  continues `1.` / `-` / `*` / `+` items (and exits on an empty one) and Tab
+  indents by two spaces; normal messages still send on Enter.

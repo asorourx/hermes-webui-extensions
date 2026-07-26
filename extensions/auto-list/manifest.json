@@ -1,0 +1,13 @@
+{
+  "extensions": [
+    {
+      "id": "auto-list",
+      "name": "Auto List",
+      "description": "Smart list typing in the message composer: continue ordered (1., 1)) and unordered (-, *, +) lists automatically on a new line, break out with two newlines, and Tab/Shift+Tab to indent by 2 spaces — like modern editors.",
+      "scripts": [
+        "assets/auto-list.js"
+      ],
+      "stylesheets": []
+    }
+  ]
+}

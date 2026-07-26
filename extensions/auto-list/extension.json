@@ -1,0 +1,45 @@
+{
+  "id": "auto-list",
+  "name": "Auto List",
+  "description": "Smart list typing in the message composer: pressing the newline key inside an ordered (1., 1)) or unordered (-, *, +) list item auto-inserts the next marker (preserving indent); an empty item + newline breaks out of the list; Tab indents the item by 2 spaces and Shift+Tab outdents — like modern editors. Send-key aware (acts only on the newline combo, never the send combo). Pure JS, no sidecar.",
+  "version": "0.1.0",
+  "author": "asorourx",
+  "assets": {
+    "scripts": [
+      "assets/auto-list.js"
+    ],
+    "stylesheets": []
+  },
+  "capabilities": [
+    "manifest-bundle"
+  ],
+  "lifecycle": {
+    "webui_restart_required": false,
+    "sidecar_start_required": false,
+    "native_host_start_required": false,
+    "native_host_autostart": "none"
+  },
+  "screenshots": [],
+  "permissions": {
+    "webui_api": {
+      "read": [],
+      "write": []
+    },
+    "webui_navigation": false,
+    "dom": {
+      "owned": false,
+      "mutates_core_views": true
+    },
+    "storage": {
+      "owned": [],
+      "shared_webui_keys": []
+    },
+    "loopback_sidecar": false,
+    "native_host": false,
+    "filesystem": {
+      "arbitrary": false,
+      "serves_bundled_assets": true
+    },
+    "network_external": false
+  }
+}
