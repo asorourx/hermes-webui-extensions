@@ -1,16 +1,18 @@
 /* Auto List — smart list continuation in the message composer.
-   • Pressing the newline key inside an ordered (`1.` / `1)`) or unordered
-     (`-` / `*` / `+`) list item auto-inserts the next marker (2., next bullet),
-     preserving the line's indent.
-   • An empty item + newline breaks OUT of the list (clears the marker) — so two
-     newlines in a row end the list, like modern editors.
+   • Pressing Enter inside an ordered (`1.` / `1)`) or unordered (`-` / `*` / `+`)
+     list item auto-inserts the next marker (2., next bullet), preserving indent.
+   • An empty item + Enter breaks OUT of the list — two Enters in a row end it.
    • Tab indents the current list item by 2 spaces; Shift+Tab outdents; outside a
      list Tab inserts 2 spaces at the caret.
-   Smart Enter: on a LIST line, Enter continues/breaks the list instead of sending —
-   so lists build with plain Enter, while a normal message still sends on Enter.
-   Cmd/Ctrl+Enter ALWAYS sends (force-send escape from inside a list). Composer
-   textarea only; capture-phase so it runs before the composer's own Enter handler.
-   No settings change, no sidecar, no core edits. */
+   Contract-safe by design:
+   • Intercepts ONLY unmodified Enter on a list line, so every configured send
+     chord (Enter / Shift+Enter / Ctrl+Enter) still reaches Core and sends.
+   • Defers to Core's IME guard (`window._isImeEnter`) so a Safari/CJK commit Enter
+     after compositionend is never consumed.
+   • Stays out of the way while the command dropdown (`#cmdDropdown.open`) owns
+     Enter/Tab for completion.
+   • Never rewrites a ranged selection on Tab (no data loss).
+   Composer textarea only; capture phase; no settings, no sidecar, no core edits. */
 (function () {
   'use strict';
   if (window.__autoList) return; window.__autoList = true;
@@ -26,6 +28,20 @@
       && el.closest('.composer-wrap, #composerWrap, .composer-flyout, .composer'));
   }
 
+  // Command dropdown owns Enter/Tab for completion — mirror Core's own `.open` signal.
+  function cmdDropdownOpen() {
+    var dd = document.getElementById('cmdDropdown');
+    return !!(dd && dd.classList.contains('open'));
+  }
+
+  // Reuse Core's IME guard when present (covers Safari's trailing Enter after
+  // compositionend via its `_imeComposing` flag); fall back to the state-free check.
+  function imeEnter(e) {
+    return (typeof window._isImeEnter === 'function')
+      ? window._isImeEnter(e)
+      : (e.isComposing || e.keyCode === 229);
+  }
+
   function curLine(ta) {
     var v = ta.value, pos = ta.selectionStart;
     var s = v.lastIndexOf('\n', pos - 1) + 1;
@@ -39,8 +55,12 @@
     var ta = e.target;
     if (!isComposer(ta)) return;
 
-    // ── Tab / Shift+Tab: indent / outdent by 2 spaces ────────────────────
+    // ── Command dropdown open: it owns Enter/Tab for completion — never steal them.
+    if ((e.key === 'Enter' || e.key === 'Tab') && cmdDropdownOpen()) return;
+
+    // ── Tab / Shift+Tab: indent / outdent by 2 spaces (collapsed caret only) ────
     if (e.key === 'Tab' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      if (ta.selectionStart !== ta.selectionEnd) return;   // ranged selection → leave to Core/browser (no data loss)
       var ln = curLine(ta), caret = ta.selectionStart;
       var onList = ORD.test(ln.text) || UN.test(ln.text);
       if (e.shiftKey) {                                    // outdent: strip ≤2 leading spaces
@@ -55,17 +75,17 @@
       if (onList) {                                        // indent the whole item
         ta.setRangeText(INDENT, ln.start, ln.start, 'end');
         ta.selectionStart = ta.selectionEnd = caret + INDENT.length;
-      } else {                                             // plain caret indent
-        ta.setRangeText(INDENT, ta.selectionStart, ta.selectionEnd, 'end');
+      } else {                                             // plain caret indent (selection is collapsed here)
+        ta.setRangeText(INDENT, ta.selectionStart, ta.selectionStart, 'end');
       }
       fire(ta); return;
     }
 
-    // ── Enter on a LIST line: continue / break, intercepting the send. Only fires
-    //    on a list line, so normal messages still send on Enter. Cmd/Ctrl+Enter is
-    //    left alone → always sends (force-send escape from inside a list). ────────
-    if (e.key !== 'Enter' || e.ctrlKey || e.metaKey || e.altKey) return;
-    if (e.isComposing || e.keyCode === 229) return;        // IME composition in progress
+    // ── Enter on a LIST line: continue / break. ONLY unmodified Enter, so every
+    //    configured send chord (Enter / Shift+Enter / Ctrl+Enter) still reaches
+    //    Core and sends — this handler never intercepts a modified Enter. ────────
+    if (e.key !== 'Enter' || e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (imeEnter(e)) return;                               // IME composition in progress
     if (ta.selectionStart !== ta.selectionEnd) return;     // ignore ranged selections
     var line = curLine(ta);
     if (ta.selectionStart < line.start) return;

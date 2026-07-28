@@ -14,7 +14,7 @@ continues the list, an empty item exits it, and Tab indents by two spaces.
   the list instead of sending.
 - **Exits the list** when you press Enter on an empty marker (the marker is
   cleared, leaving a normal line) — so two newlines in a row end the list.
-- **`Cmd`/`Ctrl`+Enter always sends**, even inside a list — the force-send escape.
+- **Every configured send chord is preserved** — the handler intercepts *only* **unmodified** Enter on a list line, so whatever you've set as send (Enter / Shift+Enter / Ctrl+Enter) always reaches the composer and sends. That send chord is also your escape from a list.
 - **Tab indents** the current list item by two spaces (nesting); **`Shift`+Tab**
   outdents; outside a list, Tab inserts two spaces at the caret.
 
@@ -108,3 +108,12 @@ Manual verification:
   composer-integration extension.
 - Ordered lists increment the current line's number on continue; they are not
   renumbered if you insert or delete an item out of order.
+
+## Interaction contracts (regression-tested)
+The capture-phase handler runs ahead of the composer, so it deliberately yields on:
+- **IME composition** — defers to Core's `window._isImeEnter(e)` when present (covers Safari's trailing Enter after `compositionend`), falling back to `isComposing`/keyCode 229.
+- **Send chord** — never intercepts a *modified* Enter; only unmodified Enter on a list line.
+- **Command dropdown** — while `#cmdDropdown.open`, Enter/Tab are left for completion.
+- **Ranged selection** — Tab is left to Core/browser (never rewrites a selection).
+
+Run the regression suite: `node --test extensions/auto-list/tests/keyboard.test.mjs` (9 tests).
