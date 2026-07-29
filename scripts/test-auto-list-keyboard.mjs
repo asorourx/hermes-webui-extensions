@@ -14,7 +14,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-const SRC = readFileSync(fileURLToPath(new URL('../assets/auto-list.js', import.meta.url)), 'utf8');
+const SRC = readFileSync(fileURLToPath(new URL('../extensions/auto-list/assets/auto-list.js', import.meta.url)), 'utf8');
 
 function loadExtension({ imeComposing = false, dropdownOpen = false } = {}) {
   const handlers = [];

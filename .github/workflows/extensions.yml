@@ -70,7 +70,7 @@ jobs:
         run: python scripts/test-profile-avatars.py
 
       - name: Test auto-list keyboard contracts
-        run: node --test extensions/auto-list/tests/keyboard.test.mjs
+        run: node --test scripts/test-auto-list-keyboard.mjs
 
       - name: Scan extension safety gates
         run: node scripts/scan-extension-safety.mjs
