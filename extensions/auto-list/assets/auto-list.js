@@ -1,18 +1,23 @@
 /* Auto List — smart list continuation in the message composer.
-   • Pressing Enter inside an ordered (`1.` / `1)`) or unordered (`-` / `*` / `+`)
-     list item auto-inserts the next marker (2., next bullet), preserving indent.
-   • An empty item + Enter breaks OUT of the list — two Enters in a row end it.
+   • The continuation key is whichever Enter chord is NOT the configured send key,
+     read from Core's `window._sendKey` — so the send action is NEVER hijacked:
+       send_key = enter        → Alt+Enter continues/breaks the list (plain Enter sends)
+       send_key = shift+enter  → plain Enter continues/breaks (Shift+Enter still sends)
+       send_key = ctrl+enter   → plain Enter continues/breaks (Ctrl+Enter still sends)
+   • On a list line the continuation key inserts the next marker (2., next bullet),
+     preserving indent; on an EMPTY item it breaks OUT of the list.
    • Tab indents the current list item by 2 spaces; Shift+Tab outdents; outside a
      list Tab inserts 2 spaces at the caret.
    Contract-safe by design:
-   • Intercepts ONLY unmodified Enter on a list line, so every configured send
-     chord (Enter / Shift+Enter / Ctrl+Enter) still reaches Core and sends.
+   • Never intercepts the configured send chord (it binds to the OTHER key), so send
+     always reaches Core. Defaults to send_key=enter when `window._sendKey` is unset.
    • Defers to Core's IME guard (`window._isImeEnter`) so a Safari/CJK commit Enter
      after compositionend is never consumed.
    • Stays out of the way while the command dropdown (`#cmdDropdown.open`) owns
      Enter/Tab for completion.
    • Never rewrites a ranged selection on Tab (no data loss).
-   Composer textarea only; capture phase; no settings, no sidecar, no core edits. */
+   • Composer textarea only — the real composer `#msg` inside `#composerWrap`.
+   Capture phase; no sidecar, no core edits; reads only Core's `window._sendKey`. */
 (function () {
   'use strict';
   if (window.__autoList) return; window.__autoList = true;
@@ -23,9 +28,29 @@
   var ORD = /^(\s*)(\d+)([.)])(?:[ \t]+(.*))?$/;    // 1) indent 2) number 3) . or ) 4) content?
   var UN  = /^(\s*)([-*+])(?:[ \t]+(.*))?$/;        // 1) indent 2) bullet 3) content?
 
+  // Scope tightly to the real composer — the `#msg` textarea inside `#composerWrap`
+  // — so a future secondary textarea can never be rewritten.
   function isComposer(el) {
-    return !!(el && el.tagName === 'TEXTAREA' && !el.readOnly && !el.disabled
-      && el.closest('.composer-wrap, #composerWrap, .composer-flyout, .composer'));
+    return !!(el && el.tagName === 'TEXTAREA' && el.id === 'msg'
+      && !el.readOnly && !el.disabled && el.closest('#composerWrap'));
+  }
+
+  // Core's authoritative send key (it reads the same global at send time). The
+  // list-continuation key is the OTHER one, so we never intercept the send chord.
+  function sendKey() {
+    var k = window._sendKey;
+    return (k === 'shift+enter' || k === 'ctrl+enter') ? k : 'enter';
+  }
+  // Is THIS Enter event the continuation key for the current send-key setting?
+  //   send_key=enter        → continuation is Alt+Enter (plain Enter is left to send)
+  //   send_key=shift/ctrl+enter → continuation is unmodified Enter (the chord still sends)
+  // Covers Numpad Enter too (e.key === 'Enter' for both main and numpad).
+  function isContinuationKey(e) {
+    if (e.key !== 'Enter') return false;
+    if (sendKey() === 'enter') {
+      return e.altKey && !e.shiftKey && !e.ctrlKey && !e.metaKey;
+    }
+    return !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey;
   }
 
   // Command dropdown owns Enter/Tab for completion — mirror Core's own `.open` signal.
@@ -81,10 +106,10 @@
       fire(ta); return;
     }
 
-    // ── Enter on a LIST line: continue / break. ONLY unmodified Enter, so every
-    //    configured send chord (Enter / Shift+Enter / Ctrl+Enter) still reaches
-    //    Core and sends — this handler never intercepts a modified Enter. ────────
-    if (e.key !== 'Enter' || e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
+    // ── Continuation key on a LIST line: continue / break. Binds to whichever Enter
+    //    chord is NOT the send key (see isContinuationKey), so the configured send
+    //    chord always reaches Core and sends — never intercepted here. ────────────
+    if (!isContinuationKey(e)) return;
     if (imeEnter(e)) return;                               // IME composition in progress
     if (ta.selectionStart !== ta.selectionEnd) return;     // ignore ranged selections
     var line = curLine(ta);

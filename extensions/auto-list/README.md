@@ -1,20 +1,27 @@
 # Auto List
 
 Auto List is a trusted local Hermes WebUI extension that makes list typing in the
-message composer behave like a modern editor: pressing Enter inside a list item
-continues the list, an empty item exits it, and Tab indents by two spaces.
+message composer behave like a modern editor: the continuation key continues the
+list, an empty item exits it, and Tab indents by two spaces. Continuation binds to
+whichever Enter chord is **not** your configured send key, so sending is never
+hijacked (see "What It Does").
 
 ## What It Does
 
-- **Continues ordered and unordered lists** on the newline key: on a line like
-  `1. buy milk`, `- eggs`, `* note`, or `1) go`, pressing Enter inserts the next
-  marker (`2. `, `- `, `* `, `2) `) on a new line, preserving the line's indent.
-- **Smart Enter** — it intercepts Enter **only on a list line**, so a normal
-  message still sends on Enter exactly as before. On a list line, Enter continues
-  the list instead of sending.
-- **Exits the list** when you press Enter on an empty marker (the marker is
-  cleared, leaving a normal line) — so two newlines in a row end the list.
-- **Every configured send chord is preserved** — the handler intercepts *only* **unmodified** Enter on a list line, so whatever you've set as send (Enter / Shift+Enter / Ctrl+Enter) always reaches the composer and sends. That send chord is also your escape from a list.
+- **The continuation key is the Enter chord that is _not_ your send key**, read from
+  Core's `window._sendKey`, so your send action is never intercepted:
+  - `send_key = enter` → **Alt+Enter** continues the list; plain **Enter still sends**.
+  - `send_key = shift+enter` → plain **Enter** continues; **Shift+Enter** still sends.
+  - `send_key = ctrl+enter` → plain **Enter** continues; **Ctrl+Enter** still sends.
+
+  (When `window._sendKey` is unset it defaults to `enter`.)
+- **Continues ordered and unordered lists**: on a line like `1. buy milk`, `- eggs`,
+  `* note`, or `1) go`, the continuation key inserts the next marker (`2. `, `- `,
+  `* `, `2) `) on a new line, preserving the line's indent.
+- **Exits the list** when you press the continuation key on an empty marker (it is
+  cleared, leaving a normal line) — so two in a row end the list.
+- **Only ever binds the non-send key**, so whatever you've set as send always reaches
+  Core and sends — whether or not you're on a list line.
 - **Tab indents** the current list item by two spaces (nesting); **`Shift`+Tab**
   outdents; outside a list, Tab inserts two spaces at the caret.
 
@@ -26,8 +33,10 @@ Hermes WebUI page
   -> /extensions/assets/auto-list.js
   -> a capture-phase keydown listener on document, scoped to the composer
      <textarea id="msg"> (inside #composerWrap)
-  -> on Enter/Tab in a list context, edits the textarea via setRangeText(...)
-     and dispatches an `input` event so the composer's autosize + send-enable react
+  -> reads Core's window._sendKey to pick the continuation chord (the non-send key)
+  -> on the continuation key / Tab in a list context, edits the textarea via
+     setRangeText(...) and dispatches an `input` event so the composer's autosize +
+     send-enable react
 ```
 
 This extension is `static-ui` / manifest-bundle only. It does not add backend
@@ -45,7 +54,8 @@ cd /path/to/hermes-webui
 HERMES_WEBUI_EXTENSION_DIR=/path/to/hermes-webui-extensions/extensions/auto-list HERMES_WEBUI_EXTENSION_MANIFEST=manifest.json ./start.sh
 ```
 
-Type `1. buy milk` in the composer, press Enter → the next line becomes `2. `.
+Type `1. buy milk` in the composer, then press the continuation key (Alt+Enter when
+your send key is Enter, otherwise plain Enter) → the next line becomes `2. `.
 
 ## Disable And Uninstall
 
@@ -61,10 +71,12 @@ This is trusted local code. Current disclosed behavior:
   when the event target is the composer `<textarea id="msg">` (inside
   `#composerWrap`) — every other element and every other key is passed through
   untouched
-- on **Enter**, calls `preventDefault()` / `stopImmediatePropagation()` **only when
-  the caret is on a list line** (to continue the list instead of sending); on any
-  non-list line Enter is not touched and sends / inserts a newline as usual
-- **never intercepts `Cmd`/`Ctrl`+Enter** — that always reaches the app's send handler
+- on the **continuation key** (the Enter chord that is not your send key, per
+  `window._sendKey`), calls `preventDefault()` / `stopImmediatePropagation()` **only
+  when the caret is on a list line**; on any non-list line it is not touched
+- **never intercepts your configured send chord** — the send key always reaches the app's send handler
+- reads exactly one Core global, `window._sendKey` (to choose the continuation chord);
+  it sets nothing and reads nothing else
 - on **Tab** / **Shift+Tab** inside the composer, inserts / removes two spaces
 - edits only the composer textarea's own value via `setRangeText(...)` and
   dispatches a synthetic `input` event; it creates no DOM of its own
@@ -93,11 +105,11 @@ python3 -m json.tool extensions/auto-list/manifest.json
 
 Manual verification:
 
-- `1. milk` + Enter → next line is `2. ` (message not sent)
-- `- eggs` + Enter → next line is `- `; `* ` and `1)` behave the same
-- Enter on an empty marker clears it and exits the list
-- a normal (non-list) message still sends on Enter
-- `Cmd`/`Ctrl`+Enter sends even while on a list line
+- `send_key=enter`: `1. milk` + **Alt+Enter** → next line is `2. `; plain **Enter sends**
+- `send_key=shift+enter`/`ctrl+enter`: `1. milk` + **Enter** → next line is `2. `; the send chord sends
+- `- eggs` + continuation key → next line is `- `; `* ` and `1)` behave the same
+- the continuation key on an empty marker clears it and exits the list
+- your configured send chord sends even while on a list line
 - Tab indents the item two spaces; `Shift`+Tab outdents; nested items keep their
   number / bullet on continue
 
@@ -112,8 +124,8 @@ Manual verification:
 ## Interaction contracts (regression-tested)
 The capture-phase handler runs ahead of the composer, so it deliberately yields on:
 - **IME composition** — defers to Core's `window._isImeEnter(e)` when present (covers Safari's trailing Enter after `compositionend`), falling back to `isComposing`/keyCode 229.
-- **Send chord** — never intercepts a *modified* Enter; only unmodified Enter on a list line.
+- **Send chord** — continuation binds to the non-send key (`window._sendKey`), so the configured send chord is never intercepted.
 - **Command dropdown** — while `#cmdDropdown.open`, Enter/Tab are left for completion.
 - **Ranged selection** — Tab is left to Core/browser (never rewrites a selection).
 
-Run the regression suite: `node --test extensions/auto-list/tests/keyboard.test.mjs` (9 tests).
+Run the regression suite: `node --test scripts/test-auto-list-keyboard.mjs` (16 tests).
