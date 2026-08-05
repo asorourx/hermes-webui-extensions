@@ -1,9 +1,15 @@
 /* Auto List — smart list continuation in the message composer.
-   • The continuation key is whichever Enter chord is NOT the configured send key,
-     read from Core's `window._sendKey` — so the send action is NEVER hijacked:
-       send_key = enter        → Alt+Enter continues/breaks the list (plain Enter sends)
-       send_key = shift+enter  → plain Enter continues/breaks (Shift+Enter still sends)
-       send_key = ctrl+enter   → plain Enter continues/breaks (Ctrl+Enter still sends)
+   • The continuation key is an Enter chord that Core does NOT send for the current
+     `window._sendKey` setting — so the send action is NEVER hijacked. Mirrors Core's
+     own send predicate (boot.js), including the coarse-pointer `_mobileDefault` path:
+       send_key = enter        → continuation is Shift+Enter (non-Numpad). On desktop
+                                  (fine pointer) plain/Alt/Ctrl/Meta/Numpad Enter all send;
+                                  on coarse-only mobile Core sends only Ctrl/Meta/Numpad
+                                  Enter (plain and Alt+Enter are newline there). Either way
+                                  Shift+Enter (non-Numpad) is never a Core send chord.
+       send_key = shift+enter  → any non-Shift Enter continues/breaks (Shift+Enter sends)
+       send_key = ctrl+enter   → plain non-Numpad Enter continues/breaks (Ctrl+Enter AND
+                                  Numpad Enter still send — Numpad is never continuation)
    • On a list line the continuation key inserts the next marker (2., next bullet),
      preserving indent; on an EMPTY item it breaks OUT of the list.
    • Tab indents the current list item by 2 spaces; Shift+Tab outdents; outside a
@@ -17,7 +23,8 @@
      Enter/Tab for completion.
    • Never rewrites a ranged selection on Tab (no data loss).
    • Composer textarea only — the real composer `#msg` inside `#composerWrap`.
-   Capture phase; no sidecar, no core edits; reads only Core's `window._sendKey`. */
+   Capture phase; no sidecar, no core edits. Reads Core's `window._sendKey` and
+   `window._isImeEnter`; sets a single idempotency flag `window.__autoList`. */
 (function () {
   'use strict';
   if (window.__autoList) return; window.__autoList = true;
@@ -36,21 +43,48 @@
   }
 
   // Core's authoritative send key (it reads the same global at send time). The
-  // list-continuation key is the OTHER one, so we never intercept the send chord.
+  // list-continuation key is an Enter chord Core does NOT send, so we never
+  // intercept the send chord.
   function sendKey() {
     var k = window._sendKey;
     return (k === 'shift+enter' || k === 'ctrl+enter') ? k : 'enter';
   }
-  // Is THIS Enter event the continuation key for the current send-key setting?
-  //   send_key=enter        → continuation is Alt+Enter (plain Enter is left to send)
-  //   send_key=shift/ctrl+enter → continuation is unmodified Enter (the chord still sends)
-  // Covers Numpad Enter too (e.key === 'Enter' for both main and numpad).
+  // Numpad Enter — mirror Core's `_isNumpadEnter` exactly. Core SENDS on Numpad
+  // Enter in ctrl+enter mode, so it must never be treated as a continuation key.
+  function isNumpadEnter(e) {
+    return e.key === 'Enter'
+      && (e.code === 'NumpadEnter'
+        || e.location === (typeof KeyboardEvent !== 'undefined' && KeyboardEvent.DOM_KEY_LOCATION_NUMPAD));
+  }
+  // Is THIS Enter event a continuation key Core would NOT send for the current
+  // send-key setting? Derived from Core's send predicate (boot.js), including the
+  // coarse-pointer `_mobileDefault` path where default mode routes into the
+  // ctrl-branch and Core SENDS every Numpad Enter. Continuation is only ever a
+  // chord Core never sends in ANY of its branches, so the send action always
+  // reaches Core:
+  //   send_key=enter        → desktop sends every non-Shift Enter; mobile
+  //                           (_mobileDefault) also sends Ctrl/Meta/Numpad Enter.
+  //                           The only never-sent chord is Shift+Enter that is NOT
+  //                           Numpad → continuation is Shift+Enter, non-Numpad.
+  //   send_key=shift+enter  → Core sends ONLY Shift+Enter → continuation is ANY
+  //                           non-Shift Enter (Ctrl/Meta/Alt/Numpad all continue).
+  //   send_key=ctrl+enter   → Core sends Ctrl/Meta/Numpad Enter → continuation is
+  //                           plain Enter with NO modifier and NOT Numpad.
   function isContinuationKey(e) {
     if (e.key !== 'Enter') return false;
-    if (sendKey() === 'enter') {
-      return e.altKey && !e.shiftKey && !e.ctrlKey && !e.metaKey;
+    var mode = sendKey();
+    if (mode === 'enter') {
+      // Shift+Enter is unsent on desktop; on mobile Numpad Enter is always sent,
+      // so exclude Numpad even with Shift held.
+      return e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey && !isNumpadEnter(e);
     }
-    return !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey;
+    if (mode === 'ctrl+enter') {
+      // Core sends Ctrl/Meta AND Numpad Enter here — never intercept those.
+      return !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey && !isNumpadEnter(e);
+    }
+    // shift+enter mode: Core sends ONLY Shift+Enter, so ANY non-Shift Enter
+    // (incl. Ctrl/Meta/Alt/Numpad Enter) is a safe continuation key.
+    return !e.shiftKey;
   }
 
   // Command dropdown owns Enter/Tab for completion — mirror Core's own `.open` signal.

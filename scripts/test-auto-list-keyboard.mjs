@@ -4,10 +4,14 @@
    Run: `node --test scripts/test-auto-list-keyboard.mjs`
 
    Covers the contracts the composer must keep:
-     0. Adaptive send-key — continuation binds to whichever Enter chord is NOT the
-        configured send key (window._sendKey), so the send chord is never hijacked:
-          send_key=enter → Alt+Enter continues; plain Enter sends.
-          send_key=shift+enter / ctrl+enter → plain Enter continues; the chord sends.
+     0. Adaptive send-key — continuation binds to an Enter chord Core does NOT send
+        for the current window._sendKey (mirrors Core's send predicate), so the send
+        chord is never intercepted. These tests have no Core send handler, so a
+        "not intercepted" assertion proves only that the extension leaves the chord
+        to Core (Core's own desktop/coarse-pointer send behavior is out of scope here):
+          send_key=enter → Shift+Enter (non-Numpad) continues; Enter/Alt/Ctrl/Meta/Numpad left to Core.
+          send_key=shift+enter → any non-Shift Enter continues; Shift+Enter left to Core.
+          send_key=ctrl+enter → plain non-Numpad Enter continues; Ctrl/Meta/Numpad Enter left to Core.
      1. IME  — a commit Enter during composition (incl. Safari's trailing Enter via
                Core's window._isImeEnter) is NEVER consumed.
      2. Scope — only the real composer `#msg` inside `#composerWrap` is touched.
@@ -20,6 +24,7 @@ import { fileURLToPath } from 'node:url';
 
 const SRC = readFileSync(fileURLToPath(new URL('../extensions/auto-list/assets/auto-list.js', import.meta.url)), 'utf8');
 
+const UNSET = Symbol('unset');
 function loadExtension({ sendKey = 'enter', imeComposing = false, dropdownOpen = false } = {}) {
   const handlers = [];
   const dd = { classList: { contains: (c) => c === 'open' && dropdownOpen } };
@@ -28,10 +33,13 @@ function loadExtension({ sendKey = 'enter', imeComposing = false, dropdownOpen =
     addEventListener: (type, fn) => { if (type === 'keydown') handlers.push(fn); },
   };
   globalThis.window = {
-    _sendKey: sendKey,
     _isImeEnter: (e) => e.isComposing || e.keyCode === 229 || imeComposing,
   };
+  // Only define _sendKey when the caller supplied a concrete value; UNSET leaves
+  // the global genuinely absent so the "defaults to enter" path is exercised.
+  if (sendKey !== UNSET) globalThis.window._sendKey = sendKey;
   globalThis.Event = class { constructor(t) { this.type = t; } };
+  globalThis.KeyboardEvent = { DOM_KEY_LOCATION_NUMPAD: 3 };
   // fresh module state each load
   (0, eval)(SRC);
   return (evt) => handlers.forEach((fn) => fn(evt));
@@ -69,28 +77,37 @@ function key(ta, k, mods = {}) {
 }
 
 // ── 0. Adaptive send-key: continuation binds to the NON-send key ─────────────
-test('send_key=enter: plain Enter on a list line is NOT intercepted (it sends)', () => {
+test('send_key=enter: plain Enter on a list line is NOT intercepted (left to Core)', () => {
   const fire = loadExtension({ sendKey: 'enter' });
   const ta = textarea('1. milk', 7);
   const e = key(ta, 'Enter');
   fire(e);
-  assert.equal(e.prevented, false, 'plain Enter must reach Core to send');
+  assert.equal(e.prevented, false, 'plain Enter is left to Core (not intercepted)');
   assert.equal(ta.rangeCalls, 0);
 });
 
-test('send_key=enter: Alt+Enter continues the list', () => {
+test('send_key=enter: Shift+Enter continues the list', () => {
+  const fire = loadExtension({ sendKey: 'enter' });
+  const ta = textarea('1. milk', 7);
+  const e = key(ta, 'Enter', { shift: true });
+  fire(e);
+  assert.equal(e.prevented, true, 'Shift+Enter is the continuation key here');
+  assert.equal(ta.value, '1. milk\n2. ', 'inserts next marker');
+});
+
+test('send_key=enter: Alt+Enter is NOT intercepted (left to Core)', () => {
   const fire = loadExtension({ sendKey: 'enter' });
   const ta = textarea('1. milk', 7);
   const e = key(ta, 'Enter', { alt: true });
   fire(e);
-  assert.equal(e.prevented, true, 'Alt+Enter is the continuation key here');
-  assert.equal(ta.value, '1. milk\n2. ', 'inserts next marker');
+  assert.equal(e.prevented, false, 'Alt+Enter is not a continuation chord in default mode — left to Core');
+  assert.equal(ta.rangeCalls, 0);
 });
 
-test('send_key=enter: Alt+Enter on an empty item breaks out of the list', () => {
+test('send_key=enter: Shift+Enter on an empty item breaks out of the list', () => {
   const fire = loadExtension({ sendKey: 'enter' });
   const ta = textarea('1. milk\n2. ', 11);
-  const e = key(ta, 'Enter', { alt: true });
+  const e = key(ta, 'Enter', { shift: true });
   fire(e);
   assert.equal(e.prevented, true);
   assert.equal(ta.value, '1. milk\n', 'empty "2. " removed');
@@ -129,12 +146,68 @@ test('send_key=ctrl+enter: plain Enter continues, Ctrl+Enter sends', () => {
   assert.equal(e.prevented, false, 'Ctrl+Enter send chord must reach Core');
 });
 
+test('send_key=ctrl+enter: Numpad Enter is NOT intercepted (Core sends it)', () => {
+  // Core's _isNumpadEnter sends on Numpad Enter in ctrl+enter mode, so the
+  // extension must never treat it as continuation. Detect via e.code and e.location.
+  let fire = loadExtension({ sendKey: 'ctrl+enter' });
+  let ta = textarea('- a', 3);
+  let e = key(ta, 'Enter', { code: 'NumpadEnter' });
+  fire(e);
+  assert.equal(e.prevented, false, 'Numpad Enter is a send chord under ctrl+enter — must reach Core');
+  assert.equal(ta.rangeCalls, 0);
+
+  // Also via KeyboardEvent.DOM_KEY_LOCATION_NUMPAD (=== 3).
+  fire = loadExtension({ sendKey: 'ctrl+enter' });
+  ta = textarea('- a', 3);
+  e = key(ta, 'Enter', { location: 3 });
+  fire(e);
+  assert.equal(e.prevented, false, 'Numpad Enter (by location) must reach Core');
+  assert.equal(ta.rangeCalls, 0);
+});
+
 test('unset window._sendKey defaults to enter (extension inert on plain Enter)', () => {
-  const fire = loadExtension({ sendKey: undefined });
+  const fire = loadExtension({ sendKey: UNSET });   // _sendKey genuinely absent
   const ta = textarea('1. milk', 7);
   const e = key(ta, 'Enter');
   fire(e);
   assert.equal(e.prevented, false, 'missing setting → treat as send_key=enter');
+});
+
+test('unset window._sendKey: Shift+Enter continues (default-mode continuation)', () => {
+  const fire = loadExtension({ sendKey: UNSET });
+  const ta = textarea('1. milk', 7);
+  const e = key(ta, 'Enter', { shift: true });
+  fire(e);
+  assert.equal(e.prevented, true, 'unset → default mode → Shift+Enter continues');
+  assert.equal(ta.value, '1. milk\n2. ');
+});
+
+test('send_key=enter: Shift+Numpad Enter is NOT intercepted (mobile default sends it)', () => {
+  // Core's _mobileDefault routes default mode into the ctrl-branch on coarse
+  // pointers, where Numpad Enter is always sent — so never treat it as continuation.
+  let fire = loadExtension({ sendKey: 'enter' });
+  let ta = textarea('1. milk', 7);
+  let e = key(ta, 'Enter', { shift: true, code: 'NumpadEnter' });
+  fire(e);
+  assert.equal(e.prevented, false, 'Shift+Numpad Enter must reach Core (mobile sends Numpad)');
+  assert.equal(ta.rangeCalls, 0);
+
+  fire = loadExtension({ sendKey: 'enter' });
+  ta = textarea('1. milk', 7);
+  e = key(ta, 'Enter', { shift: true, location: 3 });
+  fire(e);
+  assert.equal(e.prevented, false, 'Shift+Numpad Enter (by location) must reach Core');
+});
+
+test('send_key=shift+enter: Ctrl/Meta/Alt+Enter all continue (Core sends only Shift+Enter)', () => {
+  for (const mods of [{ ctrl: true }, { meta: true }, { alt: true }]) {
+    const fire = loadExtension({ sendKey: 'shift+enter' });
+    const ta = textarea('1. milk', 7);
+    const e = key(ta, 'Enter', mods);
+    fire(e);
+    assert.equal(e.prevented, true, `${JSON.stringify(mods)}+Enter continues under shift+enter (Core does not send it)`);
+    assert.equal(ta.value, '1. milk\n2. ');
+  }
 });
 
 test('Numpad Enter is treated as Enter (send_key=shift+enter → continues)', () => {

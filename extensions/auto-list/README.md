@@ -8,11 +8,16 @@ hijacked (see "What It Does").
 
 ## What It Does
 
-- **The continuation key is the Enter chord that is _not_ your send key**, read from
-  Core's `window._sendKey`, so your send action is never intercepted:
-  - `send_key = enter` → **Alt+Enter** continues the list; plain **Enter still sends**.
-  - `send_key = shift+enter` → plain **Enter** continues; **Shift+Enter** still sends.
-  - `send_key = ctrl+enter` → plain **Enter** continues; **Ctrl+Enter** still sends.
+- **The continuation key is an Enter chord that Core does _not_ send** for your
+  configured send key (read from Core's `window._sendKey`), so your send action is
+  never intercepted:
+  - `send_key = enter` → **Shift+Enter** continues the list. On desktop, plain
+    **Enter** (and Alt/Ctrl/Meta/Numpad Enter) sends; on coarse-only mobile Core
+    sends Ctrl/Meta/Numpad Enter while plain and Alt+Enter insert a newline. Either
+    way the extension only ever binds **Shift+Enter** (non-Numpad), which Core never sends.
+  - `send_key = shift+enter` → any non-Shift **Enter** continues; **Shift+Enter** still sends.
+  - `send_key = ctrl+enter` → plain **Enter** continues; **Ctrl+Enter** (and **Numpad
+    Enter**) still send.
 
   (When `window._sendKey` is unset it defaults to `enter`.)
 - **Continues ordered and unordered lists**: on a line like `1. buy milk`, `- eggs`,
@@ -54,7 +59,7 @@ cd /path/to/hermes-webui
 HERMES_WEBUI_EXTENSION_DIR=/path/to/hermes-webui-extensions/extensions/auto-list HERMES_WEBUI_EXTENSION_MANIFEST=manifest.json ./start.sh
 ```
 
-Type `1. buy milk` in the composer, then press the continuation key (Alt+Enter when
+Type `1. buy milk` in the composer, then press the continuation key (Shift+Enter when
 your send key is Enter, otherwise plain Enter) → the next line becomes `2. `.
 
 ## Disable And Uninstall
@@ -71,12 +76,13 @@ This is trusted local code. Current disclosed behavior:
   when the event target is the composer `<textarea id="msg">` (inside
   `#composerWrap`) — every other element and every other key is passed through
   untouched
-- on the **continuation key** (the Enter chord that is not your send key, per
-  `window._sendKey`), calls `preventDefault()` / `stopImmediatePropagation()` **only
+- on the **continuation key** (an Enter chord that Core does not send for your
+  `window._sendKey` setting), calls `preventDefault()` / `stopImmediatePropagation()` **only
   when the caret is on a list line**; on any non-list line it is not touched
 - **never intercepts your configured send chord** — the send key always reaches the app's send handler
-- reads exactly one Core global, `window._sendKey` (to choose the continuation chord);
-  it sets nothing and reads nothing else
+- reads two Core globals: `window._sendKey` (to choose the continuation chord) and
+  `window._isImeEnter` (to defer to Core's IME guard); it sets a single idempotency
+  flag `window.__autoList` and reads/writes nothing else
 - on **Tab** / **Shift+Tab** inside the composer, inserts / removes two spaces
 - edits only the composer textarea's own value via `setRangeText(...)` and
   dispatches a synthetic `input` event; it creates no DOM of its own
@@ -105,7 +111,7 @@ python3 -m json.tool extensions/auto-list/manifest.json
 
 Manual verification:
 
-- `send_key=enter`: `1. milk` + **Alt+Enter** → next line is `2. `; plain **Enter sends**
+- `send_key=enter`: `1. milk` + **Shift+Enter** → next line is `2. `; plain **Enter** sends (desktop) / newlines (coarse-only mobile), and the extension leaves it to Core either way
 - `send_key=shift+enter`/`ctrl+enter`: `1. milk` + **Enter** → next line is `2. `; the send chord sends
 - `- eggs` + continuation key → next line is `- `; `* ` and `1)` behave the same
 - the continuation key on an empty marker clears it and exits the list
@@ -128,4 +134,4 @@ The capture-phase handler runs ahead of the composer, so it deliberately yields 
 - **Command dropdown** — while `#cmdDropdown.open`, Enter/Tab are left for completion.
 - **Ranged selection** — Tab is left to Core/browser (never rewrites a selection).
 
-Run the regression suite: `node --test scripts/test-auto-list-keyboard.mjs` (16 tests).
+Run the regression suite: `node --test scripts/test-auto-list-keyboard.mjs`.
