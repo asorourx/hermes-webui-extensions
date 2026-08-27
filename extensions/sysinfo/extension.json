@@ -2,7 +2,7 @@
   "id": "sysinfo",
   "name": "System Info",
   "description": "Insights add-ons under System health: internet speed test (on-demand + auto-schedule) and a full Docker card \u2014 live container stats, compose-stack grouping, start/stop/restart, and one-click image updates \u2014 via a loopback sidecar.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "asorourx",
   "assets": {
     "scripts": [
@@ -42,7 +42,8 @@
         "/api/extensions/sysinfo/sidecar/api/system/docker/groups",
         "/api/extensions/sysinfo/sidecar/api/system/docker/updates",
         "/api/extensions/sysinfo/sidecar/api/system/docker/update-bulk",
-        "/api/extensions/sysinfo/sidecar/api/system/docker/op-status"
+        "/api/extensions/sysinfo/sidecar/api/system/docker/op-status",
+        "/api/extensions/sysinfo/sidecar/api/system/docker/inspect"
       ],
       "write": [
         "/api/extensions/sysinfo/sidecar/api/system/speedtest",

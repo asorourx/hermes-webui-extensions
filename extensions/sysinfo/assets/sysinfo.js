@@ -354,6 +354,7 @@ let _mcDockerGroupNamesLoaded = false;
 let _mcLastDockerPayload = null;
 let _mcDockerGroupOrder = [];        // render-order keys, referenced by index from inline handlers
 let _mcDockerUpdates = _mcNullMap();        // container name -> update-check result (on demand)
+let _mcDockerDetails = _mcNullMap();        // container id -> {open,loading,error,detail} for the info (ⓘ) panel; only OPEN panels kept (deleted on close), rebuilt from here each poll
 
 function _mcApplyDockerNameMaps(d) {
   if (!d) return;
@@ -455,6 +456,97 @@ window.mcDockerRenameContainer = async function(name, ev) {
   if (_mcLastDockerPayload) _mcRenderDockerCard(_mcLastDockerPayload);
 };
 
+// ── Per-container info (ⓘ) panel ────────────────────────────────────────────
+// Format a docker ISO timestamp (RFC3339 w/ nanoseconds) as "local · Nago".
+// Docker stamps 9 fractional digits which Date can't parse — trim to millis.
+function _mcFmtTime(iso) {
+  if (!iso) return '';
+  try {
+    const dt = new Date(String(iso).replace(/(\.\d{3})\d+/, '$1'));
+    if (isNaN(dt.getTime()) || dt.getFullYear() < 2000) return String(iso);
+    const diff = Math.max(0, Date.now() - dt.getTime());
+    const m = Math.floor(diff / 60000), h = Math.floor(m / 60), d = Math.floor(h / 24);
+    const ago = d > 0 ? (d + 'd ' + (h % 24) + 'h') : h > 0 ? (h + 'h ' + (m % 60) + 'm') : (m + 'm');
+    return dt.toLocaleString() + ' · ' + ago + ' ago';
+  } catch (_) { return String(iso); }
+}
+
+// Build the detail panel HTML from a cached {open,loading,error,detail} entry.
+// All host-derived values go through esc() — same discipline as the row itself.
+function _mcDockerDetailHtml(cid, det) {
+  const safeId = esc(String(cid || ''));
+  if (det.loading && !det.detail) {
+    return `<div class="mc-docker-detail" data-detail-for="${safeId}"><span class="mc-docker-detail-msg">Loading…</span></div>`;
+  }
+  if (det.error && !det.detail) {
+    return `<div class="mc-docker-detail" data-detail-for="${safeId}"><span class="mc-docker-detail-msg mc-docker-detail-err">Couldn’t load info — ${esc(det.error)}</span></div>`;
+  }
+  const d = det.detail || {};
+  const rows = [];
+  const add = (k, vHtml) => { if (vHtml) rows.push(`<div class="mc-docker-detail-row"><span class="mc-docker-detail-k">${esc(k)}</span><span class="mc-docker-detail-v">${vHtml}</span></div>`); };
+
+  add('Image', esc(d.image || '—'));
+
+  let st = `<span class="mc-docker-detail-state mc-docker-detail-state--${esc((d.state || 'unknown'))}">${esc(d.state || '—')}</span>`;
+  if (d.health) st += ` <span class="mc-docker-detail-muted">(${esc(d.health)})</span>`;
+  if (d.state !== 'running' && d.exit_code !== null && d.exit_code !== undefined) st += ` <span class="mc-docker-detail-muted">exit ${esc(String(d.exit_code))}</span>`;
+  add('State', st);
+
+  const nets = d.networks || {};
+  const nk = Object.keys(nets);
+  if (nk.length) add('Networks', nk.map(n => {
+    const ip = nets[n];
+    return `<span class="mc-docker-chip"><span class="mc-docker-chip-k">${esc(n)}</span>${ip ? ' ' + esc(ip) : ' <span class="mc-docker-detail-muted">no IP</span>'}</span>`;
+  }).join(' '));
+
+  const ports = Array.isArray(d.ports) ? d.ports : [];
+  add('Ports', ports.length
+    ? ports.map(p => `<span class="mc-docker-chip">${esc(p)}</span>`).join(' ')
+    : '<span class="mc-docker-detail-muted">none published</span>');
+
+  if (d.restart_policy && d.restart_policy !== 'no') add('Restart', esc(d.restart_policy));
+  if (d.compose_project) add('Stack', esc(d.compose_project) + (d.compose_service ? ' / ' + esc(d.compose_service) : ''));
+  if (d.state === 'running' && d.started_at) add('Started', esc(_mcFmtTime(d.started_at)));
+  else if (d.created) add('Created', esc(_mcFmtTime(d.created)));
+
+  return `<div class="mc-docker-detail" data-detail-for="${safeId}">${rows.join('')}</div>`;
+}
+
+// Emitted right after a container row (as a sibling in the group body) when that
+// container's ⓘ panel is open. Read from the module map so it re-appears on every
+// poll rebuild — the entry is deleted on close, so nothing accumulates.
+function _mcDockerDetailForRow(cid) {
+  const det = _mcDockerDetails[cid];
+  return (det && det.open) ? _mcDockerDetailHtml(cid, det) : '';
+}
+
+// Toggle + lazily fetch a container's info panel. Optimistic open shows a Loading…
+// placeholder immediately, then the sidecar detail replaces it. Re-render goes
+// through _mcRenderDockerCard so the panel is rebuilt from the map like any row.
+window.mcDockerInfo = function (cid, btn) {
+  if (!cid) return;
+  const cur = _mcDockerDetails[cid];
+  if (cur && cur.open) {                 // toggle closed; drop the entry
+    delete _mcDockerDetails[cid];
+    if (_mcLastDockerPayload) _mcRenderDockerCard(_mcLastDockerPayload);
+    return;
+  }
+  _mcDockerDetails[cid] = { open: true, loading: true, error: null, detail: (cur && cur.detail) || null };
+  if (_mcLastDockerPayload) _mcRenderDockerCard(_mcLastDockerPayload);
+  api('/api/system/docker/inspect?id=' + encodeURIComponent(cid)).then(res => {
+    const e = _mcDockerDetails[cid];
+    if (!e || !e.open) return;           // closed while the request was in flight
+    if (res && res.ok && res.detail) { e.loading = false; e.error = null; e.detail = res.detail; }
+    else { e.loading = false; e.error = (res && res.error) || 'unavailable'; }
+    if (_mcLastDockerPayload) _mcRenderDockerCard(_mcLastDockerPayload);
+  }).catch(err => {
+    const e = _mcDockerDetails[cid];
+    if (!e || !e.open) return;
+    e.loading = false; e.error = (err && err.message) || 'error';
+    if (_mcLastDockerPayload) _mcRenderDockerCard(_mcLastDockerPayload);
+  });
+};
+
 function _mcDockerRowHtml(c) {
   const state = (c.state || '').toLowerCase();
   const isRunning = state === 'running';
@@ -497,6 +589,9 @@ function _mcDockerRowHtml(c) {
         <span class="mc-docker-cell">RAM ${esc(c.mem_percent || '—')}</span>
         <span class="mc-docker-cell mc-docker-cell--wide">${esc(c.mem_usage || '—')}</span>
         <span class="mc-docker-actions">
+          <button type="button" class="mc-docker-info" aria-haspopup="dialog"
+                  aria-expanded="${(_mcDockerDetails[cid] && _mcDockerDetails[cid].open) ? 'true' : 'false'}"
+                  title="Container info — IP, ports, image" aria-label="Container info" data-mc-act="info">&#9432;</button>
           <button type="button" class="mc-docker-kebab" aria-haspopup="menu" aria-expanded="false"
                   title="Container actions" aria-label="Container actions" onclick="mcDockerMenu(this, event)">⋮</button>
           <div class="mc-docker-menu" role="menu" hidden>
@@ -511,7 +606,7 @@ function _mcDockerRowHtml(c) {
                     data-mc-act="rename">✎ Rename</button>
           </div>
         </span>
-      </div>`;
+      </div>${_mcDockerDetailForRow(cid)}`;
 }
 
 // Delegated click handler for the per-container action buttons. Container id/name
@@ -529,6 +624,8 @@ function _mcDockerActionDelegate(e) {
     if (typeof window.mcDockerRenameContainer === 'function') window.mcDockerRenameContainer(nm, e);
   } else if (act === 'update') {
     if (typeof window.mcDockerUpdate === 'function') window.mcDockerUpdate(cid, btn);
+  } else if (act === 'info') {
+    if (typeof window.mcDockerInfo === 'function') window.mcDockerInfo(cid, btn);
   } else if (act === 'start' || act === 'stop' || act === 'restart') {
     if (typeof window.mcDockerAction === 'function') window.mcDockerAction(cid, act, btn);
   }

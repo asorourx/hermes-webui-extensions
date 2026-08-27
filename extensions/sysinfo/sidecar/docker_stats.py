@@ -284,6 +284,96 @@ def _docker_stats_uncached() -> dict[str, Any]:
         return {"available": False, "reason": "stats_failed"}
 
 
+def docker_inspect(ident: str | None) -> dict[str, Any]:
+    """Return SAFE per-container detail for the info (i) panel: image, state/health,
+    uptime, restart policy, compose identity, network IPs, and published ports.
+
+    Deliberately withholds env vars, mounts, command lines, and PIDs — the same
+    privacy stance as the inventory sweep. This is a publishable host-control
+    surface, and a detail popover is exactly where a screenshot would leak a
+    secret. The operator opt-in allowlist is re-checked here too, so a container
+    the operator hasn't allow-listed can't be probed by feeding its id straight
+    to this endpoint.
+    """
+    if not ident or not isinstance(ident, str):
+        return {"ok": False, "error": "bad_request"}
+    if not docker_present():
+        return {"ok": False, "error": "not_installed"}
+    try:
+        r = subprocess.run(
+            [_DOCKER, "inspect", ident, "--format", "{{json .}}"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except Exception:
+        return {"ok": False, "error": "unavailable"}
+    if r.returncode != 0 or not (r.stdout or "").strip():
+        return {"ok": False, "error": "not_found"}
+    try:
+        obj = _json.loads(r.stdout.strip())
+        if isinstance(obj, list):        # some docker builds wrap the object in a list
+            obj = obj[0] if obj else {}
+    except Exception:
+        return {"ok": False, "error": "parse_failed"}
+    if not isinstance(obj, dict):
+        return {"ok": False, "error": "parse_failed"}
+
+    cfg = obj.get("Config") or {}
+    labels = cfg.get("Labels") if isinstance(cfg.get("Labels"), dict) else {}
+    name = (obj.get("Name") or "").lstrip("/")
+    # Rebuild the `k=v,k=v` label string `docker ps` emits so the SAME opt-in gate
+    # (_docker_allow) that filters the inventory also guards direct-id inspection.
+    labels_csv = ",".join(f"{k}={v}" for k, v in labels.items())
+    if not _docker_allow(name, labels_csv):
+        return {"ok": False, "error": "not_allowed"}
+
+    state = obj.get("State") or {}
+    netset = obj.get("NetworkSettings") or {}
+    host = obj.get("HostConfig") or {}
+
+    # network name -> container IP (skip blanks; a stopped container has none)
+    networks: dict[str, str] = {}
+    for nname, ninfo in (netset.get("Networks") or {}).items():
+        networks[str(nname)] = ((ninfo or {}).get("IPAddress") or "").strip()
+    if not networks and (netset.get("IPAddress") or "").strip():
+        networks["bridge"] = netset["IPAddress"].strip()
+
+    # published + exposed ports as "host->container/proto" (dedup, stable order)
+    ports: list[str] = []
+    seen: set[str] = set()
+    for cport, binds in (netset.get("Ports") or {}).items():
+        if binds:
+            for b in binds:
+                hip = (b.get("HostIp") or "").strip()
+                hport = (b.get("HostPort") or "").strip()
+                s = (f"{hport}->{cport}" if hip in ("", "0.0.0.0", "::")
+                     else f"{hip}:{hport}->{cport}")
+                if s not in seen:
+                    seen.add(s)
+                    ports.append(s)
+        elif cport not in seen:                  # exposed but not published
+            seen.add(cport)
+            ports.append(str(cport))
+
+    project, service = _compose_meta(labels_csv)
+    status = (state.get("Status") or "").lower()
+
+    detail = {
+        "name": _clean_label(name),
+        "image": cfg.get("Image"),              # raw, like the inventory (frontend escapes)
+        "state": status,
+        "health": ((state.get("Health") or {}) or {}).get("Status"),
+        "started_at": state.get("StartedAt"),
+        "created": obj.get("Created"),
+        "restart_policy": (host.get("RestartPolicy") or {}).get("Name") or "",
+        "exit_code": state.get("ExitCode") if status != "running" else None,
+        "networks": networks,
+        "ports": ports,
+        "compose_project": _clean_label(project),
+        "compose_service": _clean_label(service),
+    }
+    return {"ok": True, "detail": detail}
+
+
 def _image_local_digest(image: str) -> str | None:
     """The registry RepoDigest (sha256:...) recorded for a locally-present image,
     or None. For multi-arch images pulled by tag this is the manifest-list digest,
