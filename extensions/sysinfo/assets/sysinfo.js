@@ -475,11 +475,12 @@ function _mcFmtTime(iso) {
 // All host-derived values go through esc() — same discipline as the row itself.
 function _mcDockerDetailHtml(cid, det) {
   const safeId = esc(String(cid || ''));
+  const panelId = 'mc-docker-detail-' + safeId;
   if (det.loading && !det.detail) {
-    return `<div class="mc-docker-detail" data-detail-for="${safeId}"><span class="mc-docker-detail-msg">Loading…</span></div>`;
+    return `<div class="mc-docker-detail" id="${panelId}" data-detail-for="${safeId}" role="region" aria-label="Container details"><span class="mc-docker-detail-msg" role="status" aria-live="polite">Loading…</span></div>`;
   }
   if (det.error && !det.detail) {
-    return `<div class="mc-docker-detail" data-detail-for="${safeId}"><span class="mc-docker-detail-msg mc-docker-detail-err">Couldn’t load info — ${esc(det.error)}</span></div>`;
+    return `<div class="mc-docker-detail" id="${panelId}" data-detail-for="${safeId}" role="region" aria-label="Container details"><span class="mc-docker-detail-msg mc-docker-detail-err" role="status" aria-live="polite">Couldn’t load info — ${esc(det.error)}</span></div>`;
   }
   const d = det.detail || {};
   const rows = [];
@@ -509,7 +510,7 @@ function _mcDockerDetailHtml(cid, det) {
   if (d.state === 'running' && d.started_at) add('Started', esc(_mcFmtTime(d.started_at)));
   else if (d.created) add('Created', esc(_mcFmtTime(d.created)));
 
-  return `<div class="mc-docker-detail" data-detail-for="${safeId}">${rows.join('')}</div>`;
+  return `<div class="mc-docker-detail" id="${panelId}" data-detail-for="${safeId}" role="region" aria-label="Container details">${rows.join('')}</div>`;
 }
 
 // Emitted right after a container row (as a sibling in the group body) when that
@@ -531,19 +532,24 @@ window.mcDockerInfo = function (cid, btn) {
     if (_mcLastDockerPayload) _mcRenderDockerCard(_mcLastDockerPayload);
     return;
   }
-  _mcDockerDetails[cid] = { open: true, loading: true, error: null, detail: (cur && cur.detail) || null };
+  // Bind this fetch to THIS entry object. A close (delete) + reopen makes a NEW
+  // entry, so a late-settling response for the old open can't clobber the new one:
+  // we apply only while _mcDockerDetails[cid] is still the exact entry we created.
+  const entry = { open: true, loading: true, error: null, detail: (cur && cur.detail) || null };
+  _mcDockerDetails[cid] = entry;
   if (_mcLastDockerPayload) _mcRenderDockerCard(_mcLastDockerPayload);
+  const settle = (mut) => {
+    if (_mcDockerDetails[cid] !== entry) return;   // superseded (closed / reopened)
+    mut(entry);
+    if (_mcLastDockerPayload) _mcRenderDockerCard(_mcLastDockerPayload);
+  };
   api('/api/system/docker/inspect?id=' + encodeURIComponent(cid)).then(res => {
-    const e = _mcDockerDetails[cid];
-    if (!e || !e.open) return;           // closed while the request was in flight
-    if (res && res.ok && res.detail) { e.loading = false; e.error = null; e.detail = res.detail; }
-    else { e.loading = false; e.error = (res && res.error) || 'unavailable'; }
-    if (_mcLastDockerPayload) _mcRenderDockerCard(_mcLastDockerPayload);
+    settle(e => {
+      if (res && res.ok && res.detail) { e.loading = false; e.error = null; e.detail = res.detail; }
+      else { e.loading = false; e.error = (res && res.error) || 'unavailable'; }
+    });
   }).catch(err => {
-    const e = _mcDockerDetails[cid];
-    if (!e || !e.open) return;
-    e.loading = false; e.error = (err && err.message) || 'error';
-    if (_mcLastDockerPayload) _mcRenderDockerCard(_mcLastDockerPayload);
+    settle(e => { e.loading = false; e.error = (err && err.message) || 'error'; });
   });
 };
 
@@ -589,8 +595,9 @@ function _mcDockerRowHtml(c) {
         <span class="mc-docker-cell">RAM ${esc(c.mem_percent || '—')}</span>
         <span class="mc-docker-cell mc-docker-cell--wide">${esc(c.mem_usage || '—')}</span>
         <span class="mc-docker-actions">
-          <button type="button" class="mc-docker-info" aria-haspopup="dialog"
+          <button type="button" class="mc-docker-info"
                   aria-expanded="${(_mcDockerDetails[cid] && _mcDockerDetails[cid].open) ? 'true' : 'false'}"
+                  aria-controls="mc-docker-detail-${esc(cid)}"
                   title="Container info — IP, ports, image" aria-label="Container info" data-mc-act="info">&#9432;</button>
           <button type="button" class="mc-docker-kebab" aria-haspopup="menu" aria-expanded="false"
                   title="Container actions" aria-label="Container actions" onclick="mcDockerMenu(this, event)">⋮</button>
@@ -643,6 +650,30 @@ function _mcRenderDockerCard(payload) {
   _mcLastDockerPayload = payload;
   _mcDockerRestoreUpdates();   // bring back a previous check's badges/pill (persists across refresh)
   if (!_mcDockerGroupNamesLoaded) _mcLoadDockerGroupNames();   // fire once; re-renders on resolve
+  // Prune detail entries whose container no longer appears, so a vanished row
+  // can't retain unreachable open state indefinitely (review item 2).
+  if (docker && Array.isArray(docker.containers)) {
+    const _live = new Set(docker.containers.map(c => String((c && c.id) || '')));
+    for (const k of Object.keys(_mcDockerDetails)) if (!_live.has(k)) delete _mcDockerDetails[k];
+  }
+  // Preserve keyboard focus across the full innerHTML rebuild below: record the
+  // (container id, control) that holds focus and re-focus the equivalent node
+  // afterward, so an open panel or a routine poll never strands focus (review item 3).
+  const _focused = (function () {
+    const a = document.activeElement;
+    if (!a || !list.contains || !list.contains(a) || !a.closest) return null;
+    const row = a.closest('[data-docker-id]');
+    const cls = (a.classList && a.classList.contains('mc-docker-info')) ? 'mc-docker-info'
+              : ((a.classList && a.classList.contains('mc-docker-kebab')) ? 'mc-docker-kebab' : null);
+    return (row && cls) ? { id: row.getAttribute('data-docker-id'), cls } : null;
+  })();
+  const _restoreFocus = () => {
+    if (!_focused || !_focused.id) return;
+    const sel = (window.CSS && CSS.escape) ? CSS.escape(_focused.id) : _focused.id;
+    const row = list.querySelector('[data-docker-id="' + sel + '"]');
+    const btn = row && row.querySelector('.' + _focused.cls);
+    if (btn && typeof btn.focus === 'function') { try { btn.focus(); } catch (_) {} }
+  };
   if (docker && docker.available && Array.isArray(docker.containers) && docker.containers.length) {
     wrap.hidden = false;
     const total = docker.containers.length;
@@ -727,6 +758,7 @@ function _mcRenderDockerCard(payload) {
         <div class="mc-docker-group-body" ${expanded ? '' : 'hidden'}>${rows}</div>
       </div>`;
     }).join('');
+    _restoreFocus();
   } else if (docker && docker.available && Array.isArray(docker.containers)
              && !docker.containers.length && docker.allowlist_configured === false) {
     // Available but the operator hasn't opted any containers in (deny-by-default

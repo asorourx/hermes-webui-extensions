@@ -28,10 +28,14 @@ is decoupled, not update-proof.
   persisted server-side so they stick across devices).
 - Per-container actions (start / stop / restart) via a kebab menu.
 - Per-container **info** (the ⓘ button): a read-only panel with the image,
-  state/health, network IPs, published/exposed ports (e.g. `127.0.0.1:6333->6333/tcp`),
-  restart policy, compose identity, and uptime. Network/status fields only —
-  **never** env vars, mounts, or command lines (same privacy stance as the
-  inventory sweep), and the read is re-gated by the same opt-in allowlist.
+  state/health, network IPs (IPv4 + IPv6 when present), published/exposed ports
+  (e.g. `127.0.0.1:6333->6333/tcp`, `[::1]:8080->80/tcp`), restart policy, compose
+  identity, and uptime. Network/status fields only — **never** env vars, mounts, or
+  command lines (same privacy stance as the inventory sweep). The id is shape-validated
+  and the **opt-in allowlist is enforced before any `docker inspect` runs**, so an
+  un-opted-in container is never inspected; invalid, missing, and denied ids return one
+  indistinguishable result (no existence oracle). Network/port rows and string lengths
+  are bounded so one container can't exceed the proxy response budget.
 - **Image updates**: "Check updates" flags containers whose remote image
   digest changed; update one compose stack or all stacks — in a heuristic
   category order (data stores → infra → apps, matched by name/image, **not** a
@@ -88,9 +92,9 @@ can't read the user's state dir (other-UID users, host containers, sandboxed
 processes) — the same level as WebUI's own auth. It does **not** defend against
 arbitrary same-UID code, which can read the token file (or run `docker`) directly.
 
-Beyond auth, both Docker mutations and the read-only info panel (`GET /api/system/docker/inspect?id=…`) are additionally gated by an inventory **allowlist**
-(a rename/action — or an inspect — must name a container/project present in the filtered
-inventory), and long operations (speed test, image update-check, bulk update) use
+Beyond auth, both Docker mutations and the read-only info panel (`GET /api/system/docker/inspect?id=…`) are gated by the inventory **allowlist** **before** the sensitive call
+(a rename/action — or an inspect — must resolve to a container present in the filtered
+inventory; for inspect the allowlist is checked on a cheap `docker ps` projection, so a denied id never reaches `docker inspect`), and long operations (speed test, image update-check, bulk update) use
 **start-job + poll** — the WebUI proxy buffers responses (~10s cap), so nothing
 streams.
 

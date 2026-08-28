@@ -284,33 +284,125 @@ def _docker_stats_uncached() -> dict[str, Any]:
         return {"available": False, "reason": "stats_failed"}
 
 
-def docker_inspect(ident: str | None) -> dict[str, Any]:
-    """Return SAFE per-container detail for the info (i) panel: image, state/health,
-    uptime, restart policy, compose identity, network IPs, and published ports.
+# ── info (ⓘ) panel: SAFE, allowlist-gated, bounded per-container detail ───────
+# The id the UI sends is one of OUR OWN inventory ids (short or full hex). Validate
+# that shape so nothing option-like or shell-ish reaches the docker CLI.
+_CID_RE = _re.compile(r"^[0-9a-f]{12,64}$")
+# Bound the projection so one adversarial local container can't blow the sidecar
+# proxy response budget (network rows, port bindings, string lengths).
+_MAX_DETAIL_NETS = 24
+_MAX_DETAIL_PORTS = 64
+_MAX_DETAIL_STR = 256
 
-    Deliberately withholds env vars, mounts, command lines, and PIDs — the same
-    privacy stance as the inventory sweep. This is a publishable host-control
-    surface, and a detail popover is exactly where a screenshot would leak a
-    secret. The operator opt-in allowlist is re-checked here too, so a container
-    the operator hasn't allow-listed can't be probed by feeding its id straight
-    to this endpoint.
+
+def _resolve_allowed_container(ident: str) -> str | None:
+    """Resolve a caller-supplied id to its FULL id **iff** it is present AND opted
+    in — WITHOUT ever running ``docker inspect``.
+
+    A bounded ``docker ps -a`` projects only id/name/labels (never Env/Mounts/Cmd),
+    so the allowlist decision happens on a cheap, non-sensitive surface. Returns the
+    full id when exactly one allow-listed container matches the id prefix, else
+    ``None`` — the caller maps None to the SAME denial used for a bad shape or a
+    missing container, so this endpoint never reveals whether an id exists.
     """
-    if not ident or not isinstance(ident, str):
-        return {"ok": False, "error": "bad_request"}
-    if not docker_present():
-        return {"ok": False, "error": "not_installed"}
     try:
         r = subprocess.run(
-            [_DOCKER, "inspect", ident, "--format", "{{json .}}"],
+            [_DOCKER, "ps", "-a", "--no-trunc",
+             "--format", "{{.ID}}\t{{.Names}}\t{{.Labels}}"],
+            capture_output=True, text=True, timeout=3,
+        )
+    except Exception:
+        return None
+    if r.returncode != 0:
+        return None
+    matches: list[str] = []
+    for line in (r.stdout or "").splitlines()[:_MAX_SCAN]:
+        parts = line.split("\t", 2)              # keep any tab inside a label value
+        if not parts or not parts[0]:
+            continue
+        fid = parts[0]
+        name = parts[1] if len(parts) > 1 else ""
+        labels = parts[2] if len(parts) > 2 else ""
+        if not fid.startswith(ident):            # exact id, or our short-id prefix
+            continue
+        if _docker_allow(name, labels):
+            matches.append(fid)
+        # present-but-denied stays indistinguishable from absent (never surfaced).
+    # Exactly one allow-listed match. Zero (absent/denied) or an ambiguous prefix
+    # both deny — the astronomically-unlikely prefix collision fails closed.
+    return matches[0] if len(matches) == 1 else None
+
+
+def _bounded_ports(netset: dict) -> tuple[list[str], bool]:
+    """Published + exposed ports as ``host->container/proto`` strings, deduped and
+    capped. IPv6 host binds render as ``[::1]:8080->80/tcp``; wildcard/loopback
+    binds drop the host part. Returns (ports, truncated)."""
+    ports: list[str] = []
+    seen: set[str] = set()
+    truncated = False
+    for cport, binds in (netset.get("Ports") or {}).items():
+        rendered: list[str] = []
+        if binds:
+            for b in binds:
+                hip = (b.get("HostIp") or "").strip()
+                hport = (b.get("HostPort") or "").strip()
+                if hip in ("", "0.0.0.0", "::"):
+                    rendered.append(f"{hport}->{cport}")
+                elif ":" in hip:                 # IPv6 literal
+                    rendered.append(f"[{hip}]:{hport}->{cport}")
+                else:
+                    rendered.append(f"{hip}:{hport}->{cport}")
+        else:
+            rendered.append(str(cport))          # exposed, not published
+        for s in rendered:
+            s = s[:_MAX_DETAIL_STR]
+            if s in seen:
+                continue
+            if len(ports) >= _MAX_DETAIL_PORTS:
+                truncated = True
+                break
+            seen.add(s)
+            ports.append(s)
+        if truncated:
+            break
+    return ports, truncated
+
+
+def docker_inspect(ident: str | None) -> dict[str, Any]:
+    """Return SAFE, bounded per-container detail for the info (ⓘ) panel: image,
+    state/health, uptime, restart policy, compose identity, network IPs (IPv4 +
+    IPv6 when present), and published/exposed ports.
+
+    **Allowlist BEFORE inspect.** The opt-in allowlist is enforced on a cheap
+    ``docker ps`` projection (id/name/labels) *before* any ``docker inspect`` runs,
+    so an un-opted-in container is never inspected and its Env/Mounts/Cmd never
+    cross the boundary. Invalid-shape, missing, and denied ids all return the SAME
+    ``not_found`` denial, so the endpoint is not an existence oracle. The projected
+    detail deliberately withholds env vars, mounts, command lines, and PIDs.
+    """
+    if not docker_present():
+        return {"ok": False, "error": "not_installed"}
+    denied = {"ok": False, "error": "not_found"}   # invalid / missing / not-allowed
+    if not isinstance(ident, str) or not _CID_RE.match(ident):
+        return denied
+    full_id = _resolve_allowed_container(ident)
+    if full_id is None:
+        return denied
+
+    # Only now, on the resolved EXACT full id, run the sensitive inspect. ``--``
+    # ends option parsing so a hex id can never be read as a flag.
+    try:
+        r = subprocess.run(
+            [_DOCKER, "inspect", "--format", "{{json .}}", "--", full_id],
             capture_output=True, text=True, timeout=5,
         )
     except Exception:
         return {"ok": False, "error": "unavailable"}
     if r.returncode != 0 or not (r.stdout or "").strip():
-        return {"ok": False, "error": "not_found"}
+        return denied                              # raced away between resolve+inspect
     try:
         obj = _json.loads(r.stdout.strip())
-        if isinstance(obj, list):        # some docker builds wrap the object in a list
+        if isinstance(obj, list):                  # some docker builds wrap in a list
             obj = obj[0] if obj else {}
     except Exception:
         return {"ok": False, "error": "parse_failed"}
@@ -320,46 +412,33 @@ def docker_inspect(ident: str | None) -> dict[str, Any]:
     cfg = obj.get("Config") or {}
     labels = cfg.get("Labels") if isinstance(cfg.get("Labels"), dict) else {}
     name = (obj.get("Name") or "").lstrip("/")
-    # Rebuild the `k=v,k=v` label string `docker ps` emits so the SAME opt-in gate
-    # (_docker_allow) that filters the inventory also guards direct-id inspection.
     labels_csv = ",".join(f"{k}={v}" for k, v in labels.items())
-    if not _docker_allow(name, labels_csv):
-        return {"ok": False, "error": "not_allowed"}
-
     state = obj.get("State") or {}
     netset = obj.get("NetworkSettings") or {}
     host = obj.get("HostConfig") or {}
 
-    # network name -> container IP (skip blanks; a stopped container has none)
+    # network name -> IP(s): IPv4 (IPAddress) plus IPv6 (GlobalIPv6Address) when
+    # present. Capped.
     networks: dict[str, str] = {}
+    nets_truncated = False
     for nname, ninfo in (netset.get("Networks") or {}).items():
-        networks[str(nname)] = ((ninfo or {}).get("IPAddress") or "").strip()
+        if len(networks) >= _MAX_DETAIL_NETS:
+            nets_truncated = True
+            break
+        ninfo = ninfo or {}
+        ip4 = (ninfo.get("IPAddress") or "").strip()
+        ip6 = (ninfo.get("GlobalIPv6Address") or "").strip()
+        networks[str(nname)[:_MAX_DETAIL_STR]] = " · ".join(x for x in (ip4, ip6) if x)[:_MAX_DETAIL_STR]
     if not networks and (netset.get("IPAddress") or "").strip():
-        networks["bridge"] = netset["IPAddress"].strip()
+        networks["bridge"] = netset["IPAddress"].strip()[:_MAX_DETAIL_STR]
 
-    # published + exposed ports as "host->container/proto" (dedup, stable order)
-    ports: list[str] = []
-    seen: set[str] = set()
-    for cport, binds in (netset.get("Ports") or {}).items():
-        if binds:
-            for b in binds:
-                hip = (b.get("HostIp") or "").strip()
-                hport = (b.get("HostPort") or "").strip()
-                s = (f"{hport}->{cport}" if hip in ("", "0.0.0.0", "::")
-                     else f"{hip}:{hport}->{cport}")
-                if s not in seen:
-                    seen.add(s)
-                    ports.append(s)
-        elif cport not in seen:                  # exposed but not published
-            seen.add(cport)
-            ports.append(str(cport))
-
+    ports, ports_truncated = _bounded_ports(netset)
     project, service = _compose_meta(labels_csv)
     status = (state.get("Status") or "").lower()
 
     detail = {
         "name": _clean_label(name),
-        "image": cfg.get("Image"),              # raw, like the inventory (frontend escapes)
+        "image": (cfg.get("Image") or "")[:_MAX_DETAIL_STR] or None,
         "state": status,
         "health": ((state.get("Health") or {}) or {}).get("Status"),
         "started_at": state.get("StartedAt"),
@@ -371,6 +450,8 @@ def docker_inspect(ident: str | None) -> dict[str, Any]:
         "compose_project": _clean_label(project),
         "compose_service": _clean_label(service),
     }
+    if nets_truncated or ports_truncated:
+        detail["truncated"] = True
     return {"ok": True, "detail": detail}
 
 

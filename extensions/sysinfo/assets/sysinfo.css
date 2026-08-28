@@ -502,3 +502,9 @@
 .mc-docker-detail-state--restarting { color: #d4a043; }
 .mc-docker-detail-msg { color: var(--muted); }
 .mc-docker-detail-err { color: var(--danger, #d94343); }
+
+@media (max-width: 700px) {
+  /* Accessibility: the ⓘ control presents a ≥44×44 touch target on mobile
+     (the project's mobile-bar minimum), larger than its compact desktop footprint. */
+  .mc-docker-info { min-width: 44px; min-height: 44px; padding: 6px 10px; font-size: 16px; }
+}
