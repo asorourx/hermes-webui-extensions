@@ -1,0 +1,131 @@
+/* Custom User Avatar extension for Hermes WebUI.
+   Optional decoration: an avatar beside each right-aligned USER turn.
+
+   Rendering contract (why this is all CSS, no injected child nodes):
+   Core rebuilds each user row's innerHTML whenever it changes and skips rows whose
+   innerHTML is unchanged. Injecting a child node would defeat that skip (forcing a
+   rebuild every render) and get wiped on the next reconcile. Instead the extension
+   only sets element-level state core does not reconcile — a per-row [data-hwx-uav]
+   attribute plus custom properties on :root — and the avatar is drawn with a
+   ::before pseudo-element. User rows also carry `content-visibility:auto`, whose
+   paint containment clips anything drawn outside the row box, so the avatar is drawn
+   INSIDE the row (the bubble yields a little width for it) rather than in the gutter.
+
+   Everything is gated on :root[data-hwx-uav-on]; with it absent the transcript is
+   pixel-identical to stock. All classes/vars are hwx-uav-* namespaced. */
+
+:root {
+  --hwx-uav-size: 32px;                 /* overridden by JS from the size setting */
+  --hwx-uav-gap: 10px;
+  --hwx-uav-img: none;                  /* set to url("data:image/…") when an image exists */
+}
+
+/* Reserve space to the left of the bubble and anchor the pseudo-element. The row
+   already establishes a containing block via `contain: layout`, so adding
+   position:relative is a no-op for core's own positioned descendants. */
+:root[data-hwx-uav-on] .msg-row[data-role="user"][data-hwx-uav] {
+  position: relative;
+}
+:root[data-hwx-uav-on] .msg-row[data-role="user"][data-hwx-uav] .msg-body {
+  margin-left: calc(var(--hwx-uav-size) + var(--hwx-uav-gap));
+}
+:root[data-hwx-uav-on] .msg-row[data-role="user"][data-hwx-uav]::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 10px;                            /* aligns with the row's top padding / bubble top */
+  width: var(--hwx-uav-size);
+  height: var(--hwx-uav-size);
+  border-radius: 50%;
+  /* Neutral placeholder when enabled with no image yet; the image (if set) covers it. */
+  background-color: var(--accent-bg, rgba(127, 127, 127, .18));
+  background-image: var(--hwx-uav-img);
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  border: 1px solid var(--accent-bg-strong, rgba(127, 127, 127, .32));
+  box-sizing: border-box;
+  pointer-events: none;                 /* decoration only — never intercepts clicks */
+}
+
+/* ── Mobile: hide or compact where an avatar would cost readable width ────── */
+@media (max-width: 600px) {
+  :root[data-hwx-uav-on][data-hwx-uav-mobile="hide"] .msg-row[data-role="user"][data-hwx-uav]::before {
+    display: none;
+  }
+  :root[data-hwx-uav-on][data-hwx-uav-mobile="hide"] .msg-row[data-role="user"][data-hwx-uav] .msg-body {
+    margin-left: 0;
+  }
+  /* compact: shrink the avatar (and its reserved gutter) so the bubble keeps width */
+  :root[data-hwx-uav-on][data-hwx-uav-mobile="compact"] .msg-row[data-role="user"][data-hwx-uav] {
+    --hwx-uav-size: 20px;
+    --hwx-uav-gap: 6px;
+  }
+}
+
+/* ── Configure panel (Settings → Extensions → Custom User Avatar) ─────────── */
+.hwx-uav-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 380px;
+  color: var(--text, #111);
+  font-family: var(--font-ui, inherit);
+}
+.hwx-uav-panel h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+}
+.hwx-uav-panel p.hwx-uav-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted, #888);
+}
+.hwx-uav-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.hwx-uav-row label {
+  font-size: 13px;
+  font-weight: 600;
+}
+.hwx-uav-preview-wrap {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.hwx-uav-preview {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background-color: var(--accent-bg, rgba(127, 127, 127, .18));
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  border: 1px solid var(--border, rgba(127, 127, 127, .3));
+  flex-shrink: 0;
+}
+.hwx-uav-btn,
+.hwx-uav-select {
+  appearance: none;
+  border: 1px solid var(--border2, rgba(127, 127, 127, .25));
+  background: var(--code-bg, rgba(127, 127, 127, .1));
+  color: var(--text, #111);
+  border-radius: 7px;
+  padding: 7px 10px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.hwx-uav-btn:hover { background: var(--hover-bg, rgba(127, 127, 127, .16)); }
+.hwx-uav-btn--clear { color: var(--error, #e5534b); }
+.hwx-uav-check { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; }
+.hwx-uav-status { font-size: 11px; min-height: 14px; color: var(--muted, #888); }
+
+@media (prefers-reduced-motion: reduce) {
+  .hwx-uav-btn { transition: none; }
+}
