@@ -509,6 +509,9 @@ function _mcDockerDetailHtml(cid, det) {
   if (d.compose_project) add('Stack', esc(d.compose_project) + (d.compose_service ? ' / ' + esc(d.compose_service) : ''));
   if (d.state === 'running' && d.started_at) add('Started', esc(_mcFmtTime(d.started_at)));
   else if (d.created) add('Created', esc(_mcFmtTime(d.created)));
+  if (d.truncated === true) {
+    rows.push('<div class="mc-docker-detail-truncated" role="note">More network or port entries were omitted.</div>');
+  }
 
   return `<div class="mc-docker-detail" id="${panelId}" data-detail-for="${safeId}" role="region" aria-label="Container details">${rows.join('')}</div>`;
 }

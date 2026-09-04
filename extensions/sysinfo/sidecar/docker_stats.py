@@ -308,6 +308,7 @@ def _resolve_allowed_container(ident: str) -> str | None:
     try:
         r = subprocess.run(
             [_DOCKER, "ps", "-a", "--no-trunc",
+             "--filter", f"id={ident}",
              "--format", "{{.ID}}\t{{.Names}}\t{{.Labels}}"],
             capture_output=True, text=True, timeout=3,
         )
@@ -339,30 +340,37 @@ def _bounded_ports(netset: dict) -> tuple[list[str], bool]:
     binds drop the host part. Returns (ports, truncated)."""
     ports: list[str] = []
     seen: set[str] = set()
+    candidates_seen = 0
     truncated = False
     for cport, binds in (netset.get("Ports") or {}).items():
-        rendered: list[str] = []
         if binds:
             for b in binds:
+                if candidates_seen >= _MAX_DETAIL_PORTS:
+                    truncated = True
+                    break
+                candidates_seen += 1
                 hip = (b.get("HostIp") or "").strip()
                 hport = (b.get("HostPort") or "").strip()
                 if hip in ("", "0.0.0.0", "::"):
-                    rendered.append(f"{hport}->{cport}")
+                    rendered = f"{hport}->{cport}"
                 elif ":" in hip:                 # IPv6 literal
-                    rendered.append(f"[{hip}]:{hport}->{cport}")
+                    rendered = f"[{hip}]:{hport}->{cport}"
                 else:
-                    rendered.append(f"{hip}:{hport}->{cport}")
+                    rendered = f"{hip}:{hport}->{cport}"
+                rendered = rendered[:_MAX_DETAIL_STR]
+                if rendered in seen:
+                    continue
+                seen.add(rendered)
+                ports.append(rendered)
         else:
-            rendered.append(str(cport))          # exposed, not published
-        for s in rendered:
-            s = s[:_MAX_DETAIL_STR]
-            if s in seen:
-                continue
-            if len(ports) >= _MAX_DETAIL_PORTS:
+            if candidates_seen >= _MAX_DETAIL_PORTS:
                 truncated = True
-                break
-            seen.add(s)
-            ports.append(s)
+            else:
+                candidates_seen += 1
+                rendered = str(cport)[:_MAX_DETAIL_STR]  # exposed, not published
+                if rendered not in seen:
+                    seen.add(rendered)
+                    ports.append(rendered)
         if truncated:
             break
     return ports, truncated

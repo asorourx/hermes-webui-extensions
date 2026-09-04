@@ -35,7 +35,8 @@ is decoupled, not update-proof.
   and the **opt-in allowlist is enforced before any `docker inspect` runs**, so an
   un-opted-in container is never inspected; invalid, missing, and denied ids return one
   indistinguishable result (no existence oracle). Network/port rows and string lengths
-  are bounded so one container can't exceed the proxy response budget.
+  are bounded so one container can't exceed the proxy response budget; the panel says
+  when additional network or port entries were omitted.
 - **Image updates**: "Check updates" flags containers whose remote image
   digest changed; update one compose stack or all stacks — in a heuristic
   category order (data stores → infra → apps, matched by name/image, **not** a

@@ -30,7 +30,9 @@
   "screenshots": [
     "screenshots/insights-light.png",
     "screenshots/insights-dark.png",
-    "screenshots/docker-update.png"
+    "screenshots/docker-update.png",
+    "screenshots/container-info-desktop.jpg",
+    "screenshots/container-info-mobile.jpg"
   ],
   "permissions": {
     "webui_api": {
