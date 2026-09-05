@@ -2,7 +2,7 @@
   "id": "user-avatar",
   "name": "Custom User Avatar",
   "description": "Optional avatar beside your own (user) messages. Off by default. Enable it, upload an image (downscaled and stored only in this browser), and pick a size and narrow-screen behavior. Decoration only — it never changes message content and never touches the assistant avatar or profile-avatars storage.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "asorourx",
   "assets": {
     "scripts": [

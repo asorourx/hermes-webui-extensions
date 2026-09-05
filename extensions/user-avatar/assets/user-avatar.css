@@ -64,25 +64,56 @@
 }
 
 /* ── Configure panel (Settings → Extensions → Custom User Avatar) ─────────── */
-.hwx-uav-panel {
+/* Extension-owned modal: Core hands the Configure handler an options object,
+   never a host node, so the panel owns its own overlay, dialog semantics and
+   close paths (X / Escape / backdrop). Mirrors the Theme Creator shell. */
+.hwx-uav-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, .45);
+}
+.hwx-uav-card {
+  width: min(420px, 94vw);
+  max-height: 90vh;
+  overflow: auto;
   display: flex;
   flex-direction: column;
   gap: 14px;
-  max-width: 380px;
-  color: var(--text, #111);
+  background: var(--surface, #16161f);
+  color: var(--text, #f5f5f5);
+  border: 1px solid var(--border, rgba(127, 127, 127, .3));
+  border-radius: 14px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, .45);
+  padding: 16px 18px;
   font-family: var(--font-ui, inherit);
 }
-.hwx-uav-panel h3 {
-  margin: 0;
-  font-size: 14px;
-  font-weight: 700;
+.hwx-uav-head { display: flex; align-items: center; gap: 8px; }
+.hwx-uav-title { flex: 1; font-weight: 700; font-size: 15px; }
+.hwx-uav-x {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--muted, #888);
+  font-size: 15px;
+  cursor: pointer;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
 }
-.hwx-uav-panel p.hwx-uav-hint {
+.hwx-uav-x:hover { background: var(--hover-bg, rgba(127, 127, 127, .15)); color: var(--text, #fff); }
+.hwx-uav-card p.hwx-uav-hint {
   margin: 0;
   font-size: 12px;
   line-height: 1.5;
   color: var(--muted, #888);
 }
+/* The picker is driven by the visible "Upload image…" button and is skipped by
+   the panel's focus trap (input:not([type="file"])). */
+.hwx-uav-file { display: none; }
 .hwx-uav-row {
   display: flex;
   align-items: center;
@@ -123,6 +154,10 @@
 }
 .hwx-uav-btn:hover { background: var(--hover-bg, rgba(127, 127, 127, .16)); }
 .hwx-uav-btn--clear { color: var(--error, #e5534b); }
+.hwx-uav-btn:focus-visible,
+.hwx-uav-select:focus-visible,
+.hwx-uav-x:focus-visible,
+.hwx-uav-check input:focus-visible { outline: 2px solid var(--accent, #f5c542); outline-offset: 2px; }
 .hwx-uav-check { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; }
 .hwx-uav-status { font-size: 11px; min-height: 14px; color: var(--muted, #888); }
 

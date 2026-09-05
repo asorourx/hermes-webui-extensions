@@ -13,8 +13,8 @@ either extension's storage, and it adds no assistant-avatar path.
 ## What It Does
 
 - Adds an avatar to the left of each right-aligned user bubble when enabled.
-- The image is **downscaled to a 96×96 square and stored locally** as a data-URL
-  (`localStorage`); it never leaves the browser.
+- The image is **downscaled to a 96×96 square and stored locally** as a data-URL in the
+  extension's own scoped storage namespace; it never leaves the browser.
 - Re-applies to current and newly rendered user turns through a bounded, idempotent
   `MutationObserver` — no duplicate nodes, no observer loops.
 - Fully reversible: disabling, reloading, or uninstalling removes all decoration.
@@ -24,14 +24,40 @@ either extension's storage, and it adds no assistant-avatar path.
 Configure it in **Settings → Extensions → Custom User Avatar** (the Configure panel):
 
 - **Show avatars on my messages** — the enable toggle (default off).
-- **Upload image / Remove** — your avatar image (PNG / JPEG / GIF / WebP; SVG and
-  oversized/invalid files are rejected). Stored locally only.
+- **Upload image / Remove** — your avatar image (PNG / JPEG / WebP, per issue #63; SVG,
+  GIF, and oversized/invalid files are rejected — see [Media bounds](#media-bounds)).
+  Stored locally only.
 - **Avatar size** — Small (24px), Medium (32px), Large (44px).
 - **On narrow screens** — Hide (default) or Compact, so a phone keeps readable width.
 
 The enable / size / narrow-screen options are also declared as native
 `settings_schema` fields, so they appear directly in the extension's settings row;
 the image lives in extension-owned storage (image blobs do not belong in settings).
+
+Configure opens an **extension-owned modal**. Core invokes the handler with a single
+`{opener, restoreFocus}` options object — never a DOM host — so the panel mounts its own
+overlay with `role="dialog"`/`aria-modal`, traps Tab while open, closes on the X button,
+Escape, or a backdrop click, and settles the Configure promise **exactly once** on close
+or teardown. Core restores focus to the opener; the panel does not compete with it.
+
+### Media bounds
+
+One private canonicalization path bounds the source **before** any canvas work and
+always emits a bounded square PNG/JPEG data-URL:
+
+| Bound | Value |
+| --- | --- |
+| Accepted types | `image/png`, `image/jpeg`, `image/webp` |
+| Source bytes | ≤ 8 MB |
+| Decoded dimensions | ≤ 4096 px per side |
+| Decoded pixels | ≤ 16 megapixels |
+| Stored data-URL | ≤ 128 KiB, at most 96×96 |
+
+The dimension and pixel caps match the Profile Avatars boundary and are checked on the
+decoded bitmap, because a small compressed file can still decode to an enormous one.
+There is **no raw synchronous image setter** on the public API — every write goes
+through this path, and a refused write reports a real error and leaves the previous
+image in place.
 
 ## How It Renders (and why it is safe against core re-renders)
 
@@ -64,9 +90,10 @@ Hermes WebUI page
   -> /extensions/assets/user-avatar.js + .css
   -> marks .msg-row[data-role="user"] with data-hwx-uav; sets :root custom properties
   -> ::before pseudo-element renders the avatar (no child nodes injected)
-  -> localStorage: hermes-ext-user-avatar (downscaled data-URL)
-     + hermes-ext-user-avatar-{enabled,size,mobile} fallbacks on older core
+  -> scoped ext storage: window.hermesExt.register('user-avatar').storage['image']
+     (downscaled data-URL; cleared by Settings -> Clear extension storage)
   -> scalars via window.hermesExt settings when available
+  -> hermes-ext-user-avatar-{enabled,size,mobile} localStorage fallbacks on older core
 ```
 
 `static-ui` / manifest-bundle only. No backend routes, no sidecar, no external network,
@@ -90,7 +117,7 @@ an image. Send a message — the avatar appears beside your turn.
 Also exposed on `window.HermesUserAvatarExtension`:
 
 - `.isEnabled()` / `.setEnabled(bool)`
-- `.getImage()` / `.setImage(dataUrl)` / `.clearImage()`
+- `.getImage()` / `.setImageFile(file)` (async, canonicalizing) / `.clearImage()`
 - `.refresh()` — re-apply to current rows
 - `.teardown()` — remove all decoration, observers, and listeners
 
@@ -100,8 +127,10 @@ Also exposed on `window.HermesUserAvatarExtension`:
   immediately and the transcript is pixel-identical to stock.
 - **Uninstall:** restart Hermes WebUI without the `HERMES_WEBUI_EXTENSION_DIR` /
   `HERMES_WEBUI_EXTENSION_MANIFEST` variables, or remove the
-  `extensions/user-avatar/` directory. Your image lives under the
-  `hermes-ext-user-avatar` localStorage key.
+  `extensions/user-avatar/` directory. Your image lives in the extension's scoped
+  storage namespace, so **Settings → Clear extension storage** and uninstall remove it.
+  A pre-0.2.0 image stored under the raw `hermes-ext-user-avatar` localStorage key is
+  migrated into scoped storage once on load, and the raw key is then deleted.
 
 ## Trust And Permissions
 
@@ -112,8 +141,10 @@ Trusted local code. Disclosed behavior:
   (no injected child nodes)
 - reads the uploaded image locally (`FileReader`), downscales it via a `<canvas>`, and
   stores a small data-URL
-- reads/writes `localStorage` only under its own keys (`hermes-ext-user-avatar` and the
-  `hermes-ext-user-avatar-*` scalar fallbacks); `permissions.storage.owned` is `true`
+- stores the image in the sanctioned scoped storage namespace (`permissions.storage.owned`
+  is `true`), so Core's Clear-extension-storage and uninstall actually remove it; it
+  reads `localStorage` only under its own `hermes-ext-user-avatar*` keys (the one-time
+  legacy image migration and the scalar fallbacks on older core)
 - reads/writes its own scalar settings through `window.hermesExt` when available, with a
   localStorage fallback on older core
 - does **not** call WebUI HTTP APIs, read cookies, contact loopback or external
@@ -122,13 +153,13 @@ Trusted local code. Disclosed behavior:
 - does **not** read, write, migrate, or shadow `custom-avatar` or `profile-avatars`
   storage, and does **not** write profile, personality, memory, or core settings
 
-Only validated `data:image/(png|jpeg|gif|webp);base64,...` values are ever applied, so
-a malformed stored value cannot inject anything.
+Only validated `data:image/(png|jpeg|webp);base64,...` values within the byte cap are
+ever applied, so a malformed or oversized stored value cannot inject anything.
 
 ## Known Limitations
 
 - User-turn only (assistant avatars are `custom-avatar` / `profile-avatars`).
-- Per-browser (`localStorage`), not synced across devices.
+- Per-browser (browser-local storage), not synced across devices.
 - Relies on `.msg-row[data-role="user"]` and the user-row `content-visibility` layout;
   a core rename would need an update (fails harmlessly until then).
 - The avatar is the same image for every user turn (single user avatar), by design.
