@@ -59,6 +59,36 @@ There is **no raw synchronous image setter** on the public API — every write g
 through this path, and a refused write reports a real error and leaves the previous
 image in place.
 
+## Screenshots
+
+Every image under `screenshots/` is produced by the real-browser visual track
+(`tests/compatibility/user_avatar_smoke.py`), which boots a pinned Core
+checkout, seeds a populated transcript through Core's own `renderMessages()`
+pipeline, and measures the painted result — see
+[docs/compatibility-smoke.md](../../docs/compatibility-smoke.md).
+
+| Desktop (1440x1000) | |
+| --- | --- |
+| `desktop-disabled.png` | extension loaded but off — the transcript is pixel-identical to a page with no stored image (parity control) |
+| `desktop-small.png` / `desktop-medium.png` / `desktop-large.png` | 24 / 32 / 44px, with the reserved gutter |
+| `desktop-placeholder.png` | enabled with no image chosen yet |
+| `desktop-light.png` | light theme |
+| `desktop-large-font.png` | the `large` accessibility font size |
+| `desktop-hover.png` | Core's `.msg-actions` hover controls over a decorated row |
+| `desktop-configure.png` | the Configure modal, first control focused |
+| `desktop-configure-keyboard.png` | Tab wrapped by the focus trap |
+| `desktop-configure-error.png` | a rejected upload reporting the accepted formats |
+
+| Mobile (390x844) | |
+| --- | --- |
+| `mobile-disabled.png` | off at 390px (parity control) |
+| `mobile-hide.png` | narrow-screen **Hide** — avatar and gutter both collapse |
+| `mobile-compact.png` | narrow-screen **Compact** — 20px avatar, bubble keeps width |
+| `mobile-compact-light.png` | the same in light theme |
+| `mobile-configure.png` | the Configure modal at 390px |
+| `mobile-configure-keyboard.png` | the focus trap at 390px |
+| `mobile-configure-error.png` | the rejected-upload state at 390px |
+
 ## How It Renders (and why it is safe against core re-renders)
 
 Core rebuilds a user row's `innerHTML` whenever it changes and **skips** rows whose
@@ -179,6 +209,12 @@ node scripts/validate-extensions.mjs
 node scripts/scan-extension-safety.mjs
 node scripts/generate-registry.mjs --out dist/registry.json
 node --check extensions/user-avatar/assets/user-avatar.js
+node scripts/run-behavior-tests.mjs          # includes scripts/test-user-avatar.mjs
+
+# Real-browser visual + Configure gate (needs a Core checkout and Playwright):
+HERMES_CORE_DIR=/path/to/hermes-webui \
+  python tests/compatibility/user_avatar_smoke.py \
+  --screenshot-dir extensions/user-avatar/screenshots
 python3 -m json.tool extensions/user-avatar/extension.json
 python3 -m json.tool extensions/user-avatar/manifest.json
 ```

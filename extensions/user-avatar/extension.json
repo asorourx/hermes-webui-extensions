@@ -21,7 +21,26 @@
     "native_host_start_required": false,
     "native_host_autostart": "none"
   },
-  "screenshots": [],
+  "screenshots": [
+    "screenshots/desktop-medium.png",
+    "screenshots/desktop-small.png",
+    "screenshots/desktop-large.png",
+    "screenshots/desktop-placeholder.png",
+    "screenshots/desktop-disabled.png",
+    "screenshots/desktop-light.png",
+    "screenshots/desktop-large-font.png",
+    "screenshots/desktop-hover.png",
+    "screenshots/desktop-configure.png",
+    "screenshots/desktop-configure-keyboard.png",
+    "screenshots/desktop-configure-error.png",
+    "screenshots/mobile-hide.png",
+    "screenshots/mobile-compact.png",
+    "screenshots/mobile-compact-light.png",
+    "screenshots/mobile-disabled.png",
+    "screenshots/mobile-configure.png",
+    "screenshots/mobile-configure-keyboard.png",
+    "screenshots/mobile-configure-error.png"
+  ],
   "permissions": {
     "webui_api": {
       "read": [],
@@ -56,9 +75,18 @@
       "type": "enum",
       "label": "Avatar size",
       "options": [
-        { "value": "small", "label": "Small" },
-        { "value": "medium", "label": "Medium" },
-        { "value": "large", "label": "Large" }
+        {
+          "value": "small",
+          "label": "Small"
+        },
+        {
+          "value": "medium",
+          "label": "Medium"
+        },
+        {
+          "value": "large",
+          "label": "Large"
+        }
       ],
       "default": "medium"
     },
@@ -67,8 +95,14 @@
       "type": "enum",
       "label": "On narrow screens",
       "options": [
-        { "value": "hide", "label": "Hide" },
-        { "value": "compact", "label": "Compact" }
+        {
+          "value": "hide",
+          "label": "Hide"
+        },
+        {
+          "value": "compact",
+          "label": "Compact"
+        }
       ],
       "default": "hide"
     }

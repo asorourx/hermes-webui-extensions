@@ -130,6 +130,47 @@ missing, setup is incomplete, or Playwright cannot launch, the smoke records a
 fail-closed behavior and programmatic API/storage preservation; a real Core
 run is required for the Settings UI, focus, persistence, and no-egress claims.
 
+### Custom User Avatar visual track
+
+`user_avatar_smoke.py` is a separate extension-owned track for the
+`user-avatar` entry. Unlike the other tracks it exists to settle a **visual**
+question: user rows are `align-self:flex-end` with responsive max widths and
+mobile `content-visibility` containment, so avatar placement cannot be approved
+from CSS alone. It uses the same pinned Core checkout and isolated,
+no-provider browser boundary, seeds a populated transcript through Core's own
+`renderMessages()` pipeline (real `data-msg-idx` rows, `.msg-body` bubbles and
+`.msg-actions` hover controls, not hand-built markup), and writes JSON,
+network, and screenshot evidence under `COMPATIBILITY_EVIDENCE_DIR`.
+
+It runs sixteen cases across a desktop viewport and 390x844 mobile viewport and
+requires:
+
+- **disabled pixel parity** — with the extension loaded but off, the captured
+  PNG is byte-identical to the same page carrying no stored image at all, at
+  both viewports;
+- **measured geometry** — the `::before` avatar box and the reserved
+  `.msg-body` gutter measure exactly 24/32/44px (plus the 10px gap) at
+  Small/Medium/Large, the mobile Hide rule collapses both to zero, and mobile
+  Compact measures 20px with a 6px gap;
+- **no injected nodes** — no descendant of a user row carries an `hwx-uav`
+  class or the row attribute, so Core's innerHTML skip is preserved;
+- **Configure lifecycle against Core** — the modal opens with dialog
+  semantics and first-control focus, excludes the hidden file picker from its
+  focus trap, wraps Tab at both edges, and each of the X, Escape, and backdrop
+  paths returns
+  `HermesExtensionSettings._configureStateForExtension('user-avatar').pending`
+  to `false`;
+- **the rejected-upload path** — a GIF chosen in the real picker reports the
+  accepted formats and leaves the stored image unchanged;
+- populated proof at both viewports for consecutive turns, a long message, a
+  fenced code block, a Markdown table, hover actions, light and dark, and an
+  accessibility font size;
+- no console/page errors and no unexpected HTTP/WebSocket egress.
+
+The committed review screenshots under
+`extensions/user-avatar/screenshots/` are produced by this track; pass
+`--screenshot-dir extensions/user-avatar/screenshots` to refresh them.
+
 ## Local run
 
 Install the hash-locked Core/browser-smoke dependencies in an isolated
