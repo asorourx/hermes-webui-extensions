@@ -510,7 +510,11 @@
 }
 
 @media (max-width: 700px) {
-  /* Accessibility: the ⓘ control presents a ≥44×44 touch target on mobile
-     (the project's mobile-bar minimum), larger than its compact desktop footprint. */
-  .mc-docker-info { min-width: 44px; min-height: 44px; padding: 6px 10px; font-size: 16px; }
+  /* Accessibility: both row-action controls present a ≥44×44 touch target on
+     mobile (the project's mobile-bar minimum) so the action cluster is uniform
+     and the destructive kebab menu isn't a smaller hit target than the
+     read-only ⓘ. Larger than their compact desktop footprint. */
+  .mc-docker-info,
+  .mc-docker-kebab { min-width: 44px; min-height: 44px; }
+  .mc-docker-info { padding: 6px 10px; font-size: 16px; }
 }
