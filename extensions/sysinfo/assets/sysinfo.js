@@ -770,8 +770,10 @@ function _mcRenderDockerCard(payload) {
     if (countEl) countEl.textContent = '0/0';
     list.innerHTML = '<div class="mc-docker-empty-hint" style="padding:12px;color:var(--muted);font-size:12px;line-height:1.5">'
       + 'No containers are shown yet — this card is <strong>deny-by-default</strong>. Opt stacks in by setting '
-      + '<code>MC_DOCKER_NAME_ALLOW</code> (comma-separated name prefixes) or <code>MC_DOCKER_WORKDIR_PREFIX</code> '
-      + 'on the sidecar service, or <code>MC_DOCKER_SHOW_ALL=1</code> to show everything, then restart it.</div>';
+      + '<code>MC_DOCKER_NAME_ALLOW</code> (comma-separated name prefixes), or use '
+      + '<code>MC_DOCKER_SHOW_ALL=1</code> to show everything. '
+      + '<code>MC_DOCKER_WORKDIR_PREFIX</code> can additionally constrain authorized Compose stacks to one root; '
+      + 'it does not authorize containers by itself. Restart the sidecar after changing these settings.</div>';
   } else {
     wrap.hidden = true;
     list.innerHTML = '';

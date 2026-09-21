@@ -24,6 +24,7 @@ from __future__ import annotations
 import json as _json
 import os
 import re as _re
+import selectors as _selectors
 import shutil
 import subprocess
 import threading as _threading
@@ -71,44 +72,57 @@ def _path_within(child: str, root: str) -> bool:
 
 
 def _allowlist_configured() -> bool:
-    """True when the operator has opted in via any of the three knobs — so the UI
+    """True when the operator has configured an authorization knob — so the UI
     can show a 'configure an allowlist' hint on an empty inventory rather than a
-    bare empty card."""
+    bare empty card. The workdir prefix is a constraint, never authorization."""
     return bool(
         os.environ.get("MC_DOCKER_SHOW_ALL", "").strip() == "1"
         or os.environ.get("MC_DOCKER_NAME_ALLOW", "").strip()
-        or os.environ.get("MC_DOCKER_WORKDIR_PREFIX", "").strip()
     )
 
 
-def _docker_allow(name: str | None, labels: str | None) -> bool:
+def _docker_allow(name: str | None, workdir: str | None) -> bool:
     """Filter the System Health container list to the stacks the OPERATOR opts in.
 
     DENY-BY-DEFAULT: with nothing configured, no container is shown (the card
     renders a "configure an allowlist" message). This is a host-control surface,
-    so it must not ship a curated allowlist of anyone's specific stack. Include a
-    container only when the operator has configured one of:
-      - ``MC_DOCKER_SHOW_ALL=1`` — show every container, or
-      - ``MC_DOCKER_NAME_ALLOW`` — comma-separated name prefixes to include, or
-      - ``MC_DOCKER_WORKDIR_PREFIX`` — a compose working_dir root to include under.
+    so container-controlled labels can never grant authority. Authorization comes
+    only from SHOW_ALL or NAME_ALLOW. WORKDIR_PREFIX is an optional additional
+    constraint on an already-authorized container and cannot grant access alone.
     """
-    import os
-    if os.environ.get("MC_DOCKER_SHOW_ALL", "").strip() == "1":
-        return True
     prefix = os.environ.get("MC_DOCKER_WORKDIR_PREFIX", "").strip()
     allow = [a.strip().lower() for a in os.environ.get(
         "MC_DOCKER_NAME_ALLOW", "").split(",") if a.strip()]
-    if not prefix and not allow:
-        return False  # nothing configured → deny all (opt-in required)
-    if prefix:
-        for kv in (labels or "").split(","):
-            if kv.startswith("com.docker.compose.project.working_dir="):
-                if _path_within(kv.split("=", 1)[1], prefix):
-                    return True
-                break
-    # case-insensitive: real names are mixed-case (Cybersec-Toolkit, SEARXNG, FreqTrade)
     nm = (name or "").lower()
-    return any(nm == a or nm.startswith(a) for a in allow)
+    authorized = (
+        os.environ.get("MC_DOCKER_SHOW_ALL", "").strip() == "1"
+        or any(nm == a or nm.startswith(a) for a in allow)
+    )
+    if not authorized:
+        return False
+    return not prefix or _path_within(str(workdir or ""), prefix)
+
+
+_PS_INVENTORY_FORMAT = (
+    '{{json .ID}}\t{{json .Names}}\t{{json .Image}}\t{{json .State}}\t'
+    '{{json .Status}}\t{{json (.Label "com.docker.compose.project")}}\t'
+    '{{json (.Label "com.docker.compose.service")}}\t'
+    '{{json (.Label "com.docker.compose.project.working_dir")}}'
+)
+_PS_RESOLVE_FORMAT = (
+    '{{json .ID}}\t{{json .Names}}\t'
+    '{{json (.Label "com.docker.compose.project.working_dir")}}'
+)
+
+
+def _decode_tsv_json(line: str, fields: int) -> list[Any] | None:
+    parts = line.split("\t")
+    if len(parts) != fields:
+        return None
+    try:
+        return [_json.loads(part) for part in parts]
+    except Exception:
+        return None
 
 
 # Short TTL cache: the system-health card polls every ~2s (SSE), but the three
@@ -226,7 +240,7 @@ def _docker_stats_uncached() -> dict[str, Any]:
     # Pass 2: docker ps -a — full inventory including stopped containers.
     try:
         r = subprocess.run(
-            [_DOCKER, "ps", "-a", "--format", "{{json .}}"],
+            [_DOCKER, "ps", "-a", "--format", _PS_INVENTORY_FORMAT],
             capture_output=True, text=True, timeout=3,
         )
         containers: list[dict[str, Any]] = []
@@ -235,23 +249,19 @@ def _docker_stats_uncached() -> dict[str, Any]:
             if len(containers) >= _MAX_SCAN:
                 scan_truncated = True         # stop materializing; report truncation below
                 break
-            try:
-                obj = _json.loads(line)
-            except Exception:
+            row = _decode_tsv_json(line, 8)
+            if row is None:
                 continue
-            cid = obj.get("ID") or obj.get("Container")
-            # Only surface the containers amrx cares about (his /Volumes/stack
-            # stack + cybersec-toolkit/searxng*/freqtrade*); hide incidental ones.
-            if not _docker_allow(obj.get("Names"), obj.get("Labels")):
+            cid, name, image, state_raw, status, project, service, workdir = row
+            if not _docker_allow(name, workdir):
                 continue
             # state values: "running", "exited", "paused", "created", "dead", "restarting"
-            state = (obj.get("State") or "").lower()
-            status = obj.get("Status") or ""  # human-readable "Up 3 hours" / "Exited (0) 5 min ago"
-            project, service = _compose_meta(obj.get("Labels"))
+            state = (state_raw or "").lower()
+            status = status or ""  # human-readable "Up 3 hours" / "Exited (0) 5 min ago"
             entry: dict[str, Any] = {
                 "id":     cid,
-                "name":   _clean_label(obj.get("Names")),
-                "image":  obj.get("Image"),
+                "name":   _clean_label(name),
+                "image":  image,
                 "state":  state,
                 "status": status,
                 # Compose stack grouping (empty for plain `docker run` containers).
@@ -293,6 +303,65 @@ _CID_RE = _re.compile(r"^[0-9a-f]{12,64}$")
 _MAX_DETAIL_NETS = 24
 _MAX_DETAIL_PORTS = 64
 _MAX_DETAIL_STR = 256
+_MAX_INSPECT_STDOUT = 64 * 1024
+_MAX_RESOLVE_STDOUT = 64 * 1024
+
+_INSPECT_DETAIL_FORMAT = (
+    '{{json .Name}}\t{{json .Created}}\t{{json .Config.Image}}\t'
+    '{{json .State.Status}}\t{{json .State.Health}}\t{{json .State.StartedAt}}\t'
+    '{{json .State.ExitCode}}\t{{json .HostConfig.RestartPolicy.Name}}\t'
+    '{{json .NetworkSettings.IPAddress}}\t{{json .NetworkSettings.Networks}}\t'
+    '{{json .NetworkSettings.Ports}}\t'
+    '{{json (index .Config.Labels "com.docker.compose.project")}}\t'
+    '{{json (index .Config.Labels "com.docker.compose.service")}}'
+)
+
+
+def _run_bounded_stdout(argv: list[str], *, timeout: float, limit: int) -> tuple[int | None, str, bool]:
+    """Run argv with stderr discarded and a hard stdout byte ceiling."""
+    proc = None
+    selector = None
+    try:
+        proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        if proc.stdout is None:
+            proc.kill()
+            return None, "", False
+        selector = _selectors.DefaultSelector()
+        selector.register(proc.stdout, _selectors.EVENT_READ)
+        deadline = _time.monotonic() + timeout
+        out = bytearray()
+        while selector.get_map():
+            remaining = deadline - _time.monotonic()
+            if remaining <= 0:
+                proc.kill()
+                proc.wait()
+                return None, "", False
+            events = selector.select(min(remaining, 0.1))
+            if not events:
+                continue
+            for key, _mask in events:
+                chunk = os.read(key.fd, min(8192, limit + 1 - len(out)))
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                out.extend(chunk)
+                if len(out) > limit:
+                    proc.kill()
+                    proc.wait()
+                    return proc.returncode, "", True
+        rc = proc.wait(timeout=max(0.1, deadline - _time.monotonic()))
+        return rc, out.decode("utf-8", errors="replace"), False
+    except Exception:
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.kill()
+                proc.wait()
+            except Exception:
+                pass
+        return None, "", False
+    finally:
+        if selector is not None:
+            selector.close()
 
 
 def _resolve_allowed_container(ident: str) -> str | None:
@@ -305,28 +374,28 @@ def _resolve_allowed_container(ident: str) -> str | None:
     ``None`` — the caller maps None to the SAME denial used for a bad shape or a
     missing container, so this endpoint never reveals whether an id exists.
     """
-    try:
-        r = subprocess.run(
-            [_DOCKER, "ps", "-a", "--no-trunc",
-             "--filter", f"id={ident}",
-             "--format", "{{.ID}}\t{{.Names}}\t{{.Labels}}"],
-            capture_output=True, text=True, timeout=3,
-        )
-    except Exception:
+    rc, raw, overflow = _run_bounded_stdout(
+        [_DOCKER, "ps", "-a", "--no-trunc",
+         "--filter", f"id={ident}",
+         "--format", _PS_RESOLVE_FORMAT],
+        timeout=3,
+        limit=_MAX_RESOLVE_STDOUT,
+    )
+    if overflow or rc is None:
         return None
-    if r.returncode != 0:
+    if rc != 0:
         return None
     matches: list[str] = []
-    for line in (r.stdout or "").splitlines()[:_MAX_SCAN]:
-        parts = line.split("\t", 2)              # keep any tab inside a label value
-        if not parts or not parts[0]:
+    for line in raw.splitlines()[:_MAX_SCAN]:
+        row = _decode_tsv_json(line, 3)
+        if row is None:
             continue
-        fid = parts[0]
-        name = parts[1] if len(parts) > 1 else ""
-        labels = parts[2] if len(parts) > 2 else ""
+        fid, name, workdir = row
+        if not fid:
+            continue
         if not fid.startswith(ident):            # exact id, or our short-id prefix
             continue
-        if _docker_allow(name, labels):
+        if _docker_allow(name, workdir):
             matches.append(fid)
         # present-but-denied stays indistinguishable from absent (never surfaced).
     # Exactly one allow-listed match. Zero (absent/denied) or an ambiguous prefix
@@ -397,33 +466,35 @@ def docker_inspect(ident: str | None) -> dict[str, Any]:
     if full_id is None:
         return denied
 
-    # Only now, on the resolved EXACT full id, run the sensitive inspect. ``--``
-    # ends option parsing so a hex id can never be read as a flag.
-    try:
-        r = subprocess.run(
-            [_DOCKER, "inspect", "--format", "{{json .}}", "--", full_id],
-            capture_output=True, text=True, timeout=5,
-        )
-    except Exception:
+    # Only now, on the resolved EXACT full id, request ONLY the fields the UI
+    # renders. The bounded reader kills the child before oversized output can be
+    # fully materialized in memory. stderr is discarded separately.
+    rc, raw, overflow = _run_bounded_stdout(
+        [_DOCKER, "inspect", "--format", _INSPECT_DETAIL_FORMAT, "--", full_id],
+        timeout=5,
+        limit=_MAX_INSPECT_STDOUT,
+    )
+    if overflow:
+        return {"ok": False, "error": "detail_too_large"}
+    if rc is None:
         return {"ok": False, "error": "unavailable"}
-    if r.returncode != 0 or not (r.stdout or "").strip():
+    if rc != 0 or not raw.strip():
         return denied                              # raced away between resolve+inspect
-    try:
-        obj = _json.loads(r.stdout.strip())
-        if isinstance(obj, list):                  # some docker builds wrap in a list
-            obj = obj[0] if obj else {}
-    except Exception:
+    row = _decode_tsv_json(raw.strip(), 13)
+    if row is None:
         return {"ok": False, "error": "parse_failed"}
-    if not isinstance(obj, dict):
-        return {"ok": False, "error": "parse_failed"}
-
-    cfg = obj.get("Config") or {}
-    labels = cfg.get("Labels") if isinstance(cfg.get("Labels"), dict) else {}
-    name = (obj.get("Name") or "").lstrip("/")
-    labels_csv = ",".join(f"{k}={v}" for k, v in labels.items())
-    state = obj.get("State") or {}
-    netset = obj.get("NetworkSettings") or {}
-    host = obj.get("HostConfig") or {}
+    (
+        raw_name, created, image, status_raw, health_raw, started_at, exit_code,
+        restart_policy, bridge_ip, networks_raw, ports_raw, project, service,
+    ) = row
+    name = str(raw_name or "").lstrip("/")
+    status = str(status_raw or "").lower()
+    health = health_raw if isinstance(health_raw, dict) else {}
+    netset = {
+        "IPAddress": bridge_ip or "",
+        "Networks": networks_raw if isinstance(networks_raw, dict) else {},
+        "Ports": ports_raw if isinstance(ports_raw, dict) else {},
+    }
 
     # network name -> IP(s): IPv4 (IPAddress) plus IPv6 (GlobalIPv6Address) when
     # present. Capped.
@@ -441,18 +512,15 @@ def docker_inspect(ident: str | None) -> dict[str, Any]:
         networks["bridge"] = netset["IPAddress"].strip()[:_MAX_DETAIL_STR]
 
     ports, ports_truncated = _bounded_ports(netset)
-    project, service = _compose_meta(labels_csv)
-    status = (state.get("Status") or "").lower()
-
     detail = {
         "name": _clean_label(name),
-        "image": (cfg.get("Image") or "")[:_MAX_DETAIL_STR] or None,
+        "image": str(image or "")[:_MAX_DETAIL_STR] or None,
         "state": status,
-        "health": ((state.get("Health") or {}) or {}).get("Status"),
-        "started_at": state.get("StartedAt"),
-        "created": obj.get("Created"),
-        "restart_policy": (host.get("RestartPolicy") or {}).get("Name") or "",
-        "exit_code": state.get("ExitCode") if status != "running" else None,
+        "health": health.get("Status"),
+        "started_at": started_at,
+        "created": created,
+        "restart_policy": str(restart_policy or "")[:_MAX_DETAIL_STR],
+        "exit_code": exit_code if status != "running" else None,
         "networks": networks,
         "ports": ports,
         "compose_project": _clean_label(project),

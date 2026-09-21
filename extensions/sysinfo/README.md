@@ -20,8 +20,9 @@ is decoupled, not update-proof.
 **Docker** (collapsible; appears only when the docker CLI is reachable)
 - Opted-in inventory (running + stopped) with live CPU / RAM per container and a
   status dot (green pulse = running, amber = paused/restarting, grey = exited).
-  Deny-by-default: only containers matching your configured allowlist are shown
-  (see `MC_DOCKER_NAME_ALLOW` / `MC_DOCKER_WORKDIR_PREFIX` / `MC_DOCKER_SHOW_ALL`).
+  Deny-by-default: containers must be authorized by `MC_DOCKER_NAME_ALLOW` or
+  `MC_DOCKER_SHOW_ALL=1`. `MC_DOCKER_WORKDIR_PREFIX` is an optional
+  additional path constraint; it never grants access by itself.
 - Compose-project grouping into collapsible stacks, with per-stack
   Start / Restart / Stop-all actions.
 - Custom display names for stacks and containers (rename via the ✎ button;
@@ -105,11 +106,14 @@ streams.
 | State dir (token + json state) | `HERMES_WEBUI_STATE_DIR` | `~/.hermes/webui` |
 | Show all containers | `MC_DOCKER_SHOW_ALL=1` | off |
 | Container allow-list | `MC_DOCKER_NAME_ALLOW` | empty / off (deny all) |
-| Compose workdir filter | `MC_DOCKER_WORKDIR_PREFIX` | off |
+| Compose workdir constraint | `MC_DOCKER_WORKDIR_PREFIX` | off |
 
-The Docker card is **deny-by-default**: with none of the three knobs set, no container
-is shown or controllable. Opt stacks in with `MC_DOCKER_NAME_ALLOW` (comma-separated
-name prefixes) and/or `MC_DOCKER_WORKDIR_PREFIX`, or `MC_DOCKER_SHOW_ALL=1` to show all.
+The Docker card is **deny-by-default**: a container is authorized only by
+`MC_DOCKER_NAME_ALLOW` (comma-separated name prefixes) or
+`MC_DOCKER_SHOW_ALL=1`. If `MC_DOCKER_WORKDIR_PREFIX` is set, an otherwise
+authorized container must also have a structurally read Compose
+`project.working_dir` inside that root. The workdir label is container-controlled
+metadata, so it is never accepted as authorization on its own.
 
 Install `speedtest-cli` (optional), then the systemd user unit — it runs
 `/usr/bin/python3 -S -u sidecar.py` with no token in the unit (core provisions it
@@ -153,9 +157,11 @@ where core and the sidecar share a network namespace and the state dir.
   reads and every host-mutating route go through that proxy; `docker/updates`
   (the update sweep) and the action/update/bulk routes are **writes** — they
   start work and persist results.
-- Deny-by-default inventory: no container is shown until the operator opts in via
-  `MC_DOCKER_NAME_ALLOW` (name prefixes), `MC_DOCKER_WORKDIR_PREFIX` (a compose
-  workdir root), or `MC_DOCKER_SHOW_ALL=1`. Docker updates run
+- Deny-by-default inventory: no container is shown until the operator authorizes it
+  via `MC_DOCKER_NAME_ALLOW` (name prefixes) or `MC_DOCKER_SHOW_ALL=1`.
+  `MC_DOCKER_WORKDIR_PREFIX` is only an additional compose-workdir constraint
+  on containers already authorized by one of those operator-owned controls; a
+  container label can never grant access by itself. Docker updates run
   `docker compose pull/up` **from each stack's host-derived compose working_dir**,
   so the sidecar reads that stack's compose files/`.env` and uses whatever
   registry/Docker credentials the daemon has — hence `filesystem.arbitrary:true`
