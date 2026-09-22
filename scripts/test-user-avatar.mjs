@@ -122,6 +122,9 @@ function createHarness({
   settingsSchemaDefaults = null,
   settingsWritesFail = false,
   localWritesFail = false,
+  scoped = null,
+  overridesSupported = true,
+  unsupportedSettings = false,
 } = {}) {
   let failSettings = settingsWritesFail;
   let failLocal = localWritesFail;
@@ -144,9 +147,10 @@ function createHarness({
   if (legacyImage) store.set(LEGACY_IMAGE_KEY, legacyImage);
   if (image) extStore.set('image', image);
   if (legacyScalars) for (const [k, v] of Object.entries(legacyScalars)) store.set(k, String(v));
+  if (scoped) for (const [k, v] of Object.entries(scoped)) settingsBackend.set(k, v);
 
   const settings = settingsSupported ? {
-    supported: true,
+    supported: !unsupportedSettings,
     // Real Core answers a SCHEMA DEFAULT for an unset key rather than undefined;
     // settingsSchemaDefaults models that so the migration path is exercised honestly.
     get(key) {
@@ -159,6 +163,18 @@ function createHarness({
     set(key, value) {
       if (failSettings) return { ok: false };
       settingsBackend.set(key, value); return { ok: true };
+    },
+    // Mirrors Core's overridesFromValues(): only values that differ from the
+    // schema default count as an explicit user choice.
+    get overrides() {
+      if (!overridesSupported) return undefined;
+      const out = {};
+      for (const [k, v] of settingsBackend) {
+        if (v === undefined) continue;
+        if (settingsSchemaDefaults && k in settingsSchemaDefaults && settingsSchemaDefaults[k] === v) continue;
+        out[k] = v;
+      }
+      return out;
     },
     registerConfigure(fn) { configureHook = fn; },
   } : undefined;
@@ -540,12 +556,10 @@ async function runFile(h, file, { width = 64, height = 64, failRead = false, fai
 }
 
 // ── CONFIGURE: a refused settings write must not leave a lying control ──────
-// On a Core WITH scoped settings the scoped store is authoritative: readScalar()
-// prefers it, so a scoped refusal means the requested value is not in effect even
-// though the raw shadow write succeeded. Reporting success there would leave the
-// control displaying a value that was never applied. This case (scoped refused,
-// raw succeeds) is the realistic one — a quota failure hitting only the scoped
-// store — so it is what the guard has to handle.
+// On a Core WITH scoped settings the scoped store is the only store. A refusal
+// there means the requested value is not in effect, so the control must revert,
+// say so, and leave no raw localStorage copy behind that a later downgrade would
+// pick up as if it had been saved.
 {
   const h = createHarness({ settingsWritesFail: true, localWritesFail: false,
     settingsSchemaDefaults: { enabled: false, size: 'medium', mobile: 'hide' } });
@@ -590,6 +604,9 @@ async function runFile(h, file, { width = 64, height = 64, failRead = false, fai
     'a refused narrow-screen write restores the select to the authoritative value');
   assert.equal(h2.rootEl.getAttribute('data-hwx-uav-mobile'), 'hide',
     'a refused narrow-screen write does not apply the unsaved value');
+  assert.ok(['hermes-ext-user-avatar-enabled', 'hermes-ext-user-avatar-size',
+    'hermes-ext-user-avatar-mobile'].every((k) => !h.store.has(k) && !h2.store.has(k)),
+    'no refused value is persisted to a raw key a later downgrade could read');
 }
 
 // ── CONFIGURE: Core's real contract, settled exactly once ───────────────────
@@ -779,18 +796,86 @@ async function runFile(h, file, { width = 64, height = 64, failRead = false, fai
   assert.equal((h.documentListeners.keydown || []).length, 0, 'teardown unbinds the keydown trap');
 }
 
-// ── mirror-write: scoped and raw fallback stay in sync, so no migration is needed ──
-// The raw localStorage key is a synchronised shadow of the scoped setting rather than
-// a legacy store, so an older Core reading the same browser always sees the current
-// value and there is never an orphaned value to reconcile.
+// ── one authoritative store: raw keys are never written beside scoped settings ──
+// With scoped settings available, the raw `hermes-ext-user-avatar-*` keys are only
+// an older-Core leftover: folded in once on load and then deleted, never mirrored.
+const DEFAULTS = { enabled: false, size: 'medium', mobile: 'hide' };
+const RAW = { enabled: 'hermes-ext-user-avatar-enabled', size: 'hermes-ext-user-avatar-size',
+  mobile: 'hermes-ext-user-avatar-mobile' };
 {
-  const h = createHarness({ settingsSchemaDefaults: { enabled: false, size: 'medium', mobile: 'hide' } });
+  const h = createHarness({ settingsSchemaDefaults: DEFAULTS });
   h.api().setEnabled(true);
-  assert.equal(h.store.get('hermes-ext-user-avatar-enabled'), 'true',
-    'a scoped write also refreshes the raw shadow copy for older Core');
-  h.api().setEnabled(false);
-  assert.equal(h.store.get('hermes-ext-user-avatar-enabled'), 'false',
-    'the raw shadow copy tracks later changes instead of going stale');
+  assert.equal(h.store.has(RAW.enabled), false,
+    'a scoped write does not create a raw shadow copy');
+  assert.equal(h.settingsBackend.get('enabled'), true, 'the scoped store holds the choice');
+}
+{
+  // Upgrade from an older Core: validated raw scalars are adopted, then deleted.
+  const h = createHarness({ settingsSchemaDefaults: DEFAULTS,
+    legacyScalars: { [RAW.enabled]: 'true', [RAW.size]: 'large', [RAW.mobile]: 'compact' } });
+  assert.equal(h.api().isEnabled(), true, 'an older-Core "enabled" survives the upgrade');
+  assert.equal(h.rootEl.style.getPropertyValue('--hwx-uav-size'), '44px',
+    'an older-Core size survives the upgrade and is applied on first load');
+  assert.equal(h.rootEl.getAttribute('data-hwx-uav-mobile'), 'compact',
+    'an older-Core narrow-screen mode survives the upgrade');
+  assert.deepEqual([h.settingsBackend.get('enabled'), h.settingsBackend.get('size'),
+    h.settingsBackend.get('mobile')], [true, 'large', 'compact'], 'the values now live in scoped settings');
+  assert.ok(Object.values(RAW).every((k) => !h.store.has(k)), 'every adopted raw key is deleted');
+  // A later native Reset (Core clears the overrides) must not be undone by a raw key.
+  ['enabled', 'size', 'mobile'].forEach((k) => h.settingsBackend.set(k, undefined));
+  h.api().refresh();
+  assert.equal(h.api().isEnabled(), false, 'a native Reset after the upgrade is not resurrected');
+}
+{
+  // An explicit scoped choice always wins over an older-Core raw value.
+  const h = createHarness({ settingsSchemaDefaults: DEFAULTS, scoped: { size: 'small' },
+    legacyScalars: { [RAW.size]: 'large' } });
+  assert.equal(h.settingsBackend.get('size'), 'small', 'the explicit scoped size is kept');
+  assert.equal(h.store.has(RAW.size), false, 'the superseded raw key is deleted, not kept around');
+}
+{
+  // Junk raw values are dropped, not adopted.
+  const h = createHarness({ settingsSchemaDefaults: DEFAULTS,
+    legacyScalars: { [RAW.size]: 'gigantic', [RAW.enabled]: 'yes' } });
+  assert.equal(h.settingsBackend.get('size'), undefined, 'an invalid raw size is not adopted');
+  assert.equal(h.api().isEnabled(), false, 'an invalid raw enabled value is not adopted');
+  assert.ok(!h.store.has(RAW.size) && !h.store.has(RAW.enabled), 'junk raw keys are deleted');
+}
+{
+  // A refused adoption keeps the raw key so the value is retried, never lost.
+  const h = createHarness({ settingsSchemaDefaults: DEFAULTS, settingsWritesFail: true,
+    legacyScalars: { [RAW.enabled]: 'true' } });
+  assert.equal(h.store.get(RAW.enabled), 'true', 'a refused migration keeps the raw key');
+}
+{
+  // A Core without the overrides accessor cannot prove what is explicit, so the
+  // raw keys are left untouched rather than guessed at or deleted.
+  const h = createHarness({ settingsSchemaDefaults: DEFAULTS, overridesSupported: false,
+    legacyScalars: { [RAW.size]: 'large' } });
+  assert.equal(h.store.get(RAW.size), 'large', 'without overrides the raw key is preserved');
+  assert.equal(h.settingsBackend.get('size'), undefined, 'without overrides nothing is adopted');
+}
+{
+  // Older Core (no scoped settings): the raw keys ARE the store. A raw write that
+  // throws leaves the effective state unchanged, and a working one is honored.
+  const h = createHarness({ settingsSupported: false, storageSupported: false, localWritesFail: true });
+  assert.equal(h.api().setEnabled(true), false,
+    'a refused raw write leaves the avatar off on an older Core');
+  const ok = createHarness({ settingsSupported: false, storageSupported: false });
+  assert.equal(ok.api().setEnabled(true), true, 'a working raw write enables it on an older Core');
+  assert.equal(ok.store.get(RAW.enabled), 'true', 'the older-Core raw key is the store');
+  // A Core that registers Configure but reports settings unsupported routes the
+  // panel through the raw fallback; a throwing raw write must revert and report.
+  const h3 = createHarness({ storageSupported: false, localWritesFail: true, unsupportedSettings: true });
+  assert.equal(h3.api().settingsBackend, 'localStorage', 'settings.supported=false uses the raw fallback');
+  const core3 = coreConfigure(h3);
+  core3.invoke();
+  const box3 = h3.panel().querySelector('input:not([type="file"])');
+  box3.checked = true;
+  box3.emit('change', {});
+  assert.equal(box3.checked, false, 'a throwing raw write reverts the Configure checkbox');
+  assert.equal(panelControl(h3, 'hwx-uav-status').textContent, 'Could not save that setting.',
+    'a throwing raw write is reported, not claimed as saved');
 }
 
 // ── graceful degrade: no hermesExt settings -> localStorage fallback works ──

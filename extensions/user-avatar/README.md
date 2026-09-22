@@ -168,12 +168,15 @@ Also exposed on `window.HermesUserAvatarExtension`:
   Your image lives in the extension's scoped storage namespace, so **Settings →
   Clear extension storage** removes it. The enable/size/mobile scalars are
   *settings*, not storage: **Reset settings** returns the scoped values to their
-  defaults, and switching the extension off only disables the decoration. Those
-  scalars are also mirrored into `hermes-ext-user-avatar-*` localStorage keys so a
-  Core without scoped settings can read them; that mirror is written on every
-  change but is **not** cleared by Reset settings, so clear site data if you want
-  it gone. A pre-0.2.0 image stored under the raw `hermes-ext-user-avatar` key is
-  migrated into scoped storage once on load and the raw key is then deleted.
+  defaults, and switching the extension off only disables the decoration. On a
+  Core without scoped settings the scalars live in `hermes-ext-user-avatar-*`
+  localStorage keys instead. When you later upgrade to a Core that has scoped
+  settings, those keys are folded in once on load (only for settings you have not
+  already chosen there) and then deleted, so a native Save or Reset is never
+  overridden by an old value. The migration is one-way: a choice made on a
+  modern Core is not visible to an older Core that later reads the same browser.
+  A pre-0.2.0 image stored under the raw `hermes-ext-user-avatar` key is migrated
+  into scoped storage once on load and the raw key is then deleted.
 
 ## Trust And Permissions
 
@@ -188,10 +191,10 @@ Trusted local code. Disclosed behavior:
   is `true`), so Core's Clear-extension-storage removes it; note that *uninstalling* only
   removes the extension's files and manifest entry and does **not** clear browser-local
   data. It reads and writes `localStorage` only under its own `hermes-ext-user-avatar*`
-  keys (the one-time legacy image migration, and the scalar mirror described above)
-- writes its scalar settings through `window.hermesExt` when available — that scoped
-  store is authoritative — and mirrors each value into its own localStorage key so a
-  Core without scoped settings can still read it
+  keys (the settings store on an older Core, and the one-time migrations described
+  above)
+- writes its scalar settings through `window.hermesExt` when available, and only
+  there; on an older Core without scoped settings it writes its own localStorage keys
 - does **not** call WebUI HTTP APIs, read cookies, contact loopback or external
   networks (the image never leaves the browser), or use native host / arbitrary
   filesystem APIs (the picker is a standard `<input type=file>`)

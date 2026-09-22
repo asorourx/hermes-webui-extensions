@@ -94,33 +94,71 @@
     } catch (_) {}
     return dflt;
   }
-  // Mirror write: the scoped setting is authoritative when supported, and the raw
-  // localStorage key is kept as a shadow copy so an older Core (which has no scoped
-  // settings) still reads the user's current choice from the same browser.
+  // One authoritative store per Core generation, never two at once:
+  //   * Core WITH scoped settings: the scoped store owns the scalars and the raw
+  //     `hermes-ext-user-avatar-*` keys are never written.
+  //   * Core WITHOUT scoped settings: the raw keys are the store.
+  // A raw key found while scoped settings are available was therefore written by
+  // an older Core (or by a pre-release build of this extension that mirrored
+  // them). migrateLegacyScalars() folds it in once on load: it fills a setting
+  // only when the user has no explicit scoped choice for it — an explicit choice
+  // always wins — and then deletes the raw key, so it is considered exactly once
+  // and can never later resurrect an old value over a native Save or Reset.
+  // The cost, disclosed in the README: a choice made on a modern Core is not
+  // visible to an older Core that later reads the same browser.
   //
-  // Known limitation, deliberately not papered over: the mirror is one-way and
-  // unversioned. Core's own native Save/Reset writes the scoped store directly
-  // without going through here, so after such a change the shadow is stale, and a
-  // later downgrade to a Core without scoped settings would read that stale value.
-  // Resolving it properly needs a versioned migration protocol; the extension does
-  // not claim downgrade fidelity, and the README says so.
-  //
-  // Returns whether the value is authoritative afterwards. On a Core with scoped
-  // settings that is the scoped result alone: readScalar() prefers the scoped
-  // store, so a scoped refusal means the requested value will NOT be read back
-  // even if the raw shadow write succeeded, and reporting success would leave the
-  // Configure control showing a value that is not in effect. Only when scoped
-  // settings are unavailable is the raw key authoritative.
+  // Returns whether the requested value is in effect afterwards, i.e. the real
+  // result of a write to the authoritative store.
   function writeScalar(key, fallbackKey, value) {
-    let ok = false;
     if (settingsSupported) {
+      let ok = false;
       try {
         const res = settings.set(key, value);
         ok = !!(res && typeof res === 'object' ? res.ok === true : res !== false);
       } catch (_) {}
+      // An explicit new choice supersedes any raw value an older Core left behind.
+      if (ok) { try { localStorage.removeItem(fallbackKey); } catch (_) {} }
+      return ok;
     }
-    try { localStorage.setItem(fallbackKey, String(value)); } catch (_) {}
-    return ok || !settingsSupported;
+    try { localStorage.setItem(fallbackKey, String(value)); return true; }
+    catch (_) { return false; }
+  }
+
+  // Validate a raw value written by an older Core. Returns undefined for junk.
+  function parseLegacyScalar(key, raw) {
+    if (key === 'enabled') return raw === 'true' ? true : (raw === 'false' ? false : undefined);
+    if (key === 'size') return SIZES[raw] ? raw : undefined;
+    if (key === 'mobile') return (raw === 'hide' || raw === 'compact') ? raw : undefined;
+    return undefined;
+  }
+
+  // Fold raw scalars from an older Core into scoped settings, before the first
+  // apply(). `settings.overrides` holds only the keys the user explicitly set
+  // (settings.get() answers a schema default for the rest), which is what lets an
+  // explicit choice win. A raw key is deleted once it has been considered — adopted,
+  // superseded by an explicit choice, or junk — and kept only when adopting it was
+  // refused, so a storage failure never loses the value (retried on the next load,
+  // the same idiom as migrateLegacyImage()).
+  function migrateLegacyScalars() {
+    if (!settingsSupported) return;
+    let explicit;
+    try { explicit = settings.overrides; } catch (_) { return; }
+    if (!explicit || typeof explicit !== 'object') return;   // cannot tell; keep raw keys
+    Object.keys(FALLBACK).forEach((key) => {
+      const fallbackKey = FALLBACK[key];
+      let raw = null;
+      try { raw = localStorage.getItem(fallbackKey); } catch (_) { return; }
+      if (raw === null) return;
+      const value = parseLegacyScalar(key, raw);
+      let done = true;
+      if (value !== undefined && !Object.prototype.hasOwnProperty.call(explicit, key)) {
+        try {
+          const res = settings.set(key, value);
+          done = !!(res && typeof res === 'object' ? res.ok === true : res !== false);
+        } catch (_) { done = false; }
+      }
+      if (done) { try { localStorage.removeItem(fallbackKey); } catch (_) {} }
+    });
   }
 
 
@@ -627,6 +665,7 @@
     attempt = attempt || 0;
     if (document.getElementById('messages') || document.querySelector(ROW_SELECTOR)) {
       installed = true;
+      migrateLegacyScalars();
       migrateLegacyImage();
       startObserver();
       startReconcile();
