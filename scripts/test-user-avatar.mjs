@@ -176,7 +176,12 @@ function createHarness({
       }
       return out;
     },
-    registerConfigure(fn) { configureHook = fn; },
+    // Mirrors Core's registerConfigureHandler(): returns an unregister disposer.
+    registerConfigure(fn) {
+      configureHook = fn;
+      let active = true;
+      return () => { if (!active) return false; active = false; if (configureHook === fn) configureHook = null; return true; };
+    },
   } : undefined;
 
   // Mirrors Core's storageAccessor: a namespaced record, get/set/remove/clear,
@@ -794,6 +799,22 @@ async function runFile(h, file, { width = 64, height = 64, failRead = false, fai
   assert.equal(h.panel(), null, 'teardown removes the Configure panel');
   assert.equal(core.settleCount, 1, 'teardown settles the pending Configure exactly once');
   assert.equal((h.documentListeners.keydown || []).length, 0, 'teardown unbinds the keydown trap');
+}
+{
+  // Teardown unregisters the Configure hook through Core's disposer, so Settings
+  // can no longer reopen the modal or reinstall its keydown trap.
+  const h = createHarness();
+  const handler = h.configureHook();
+  assert.equal(typeof handler, 'function', 'Configure is registered while installed');
+  h.api().teardown();
+  assert.equal(h.configureHook(), null, 'teardown calls Core\'s unregister for the Configure hook');
+  // A handler reference Core captured earlier (or an older Core with no
+  // unregister) must still be inert after teardown: it settles, opens nothing.
+  let settled = false;
+  await handler({ opener: null, restoreFocus() {} }).then(() => { settled = true; });
+  assert.equal(settled, true, 'a post-teardown Configure invocation settles immediately');
+  assert.equal(h.panel(), null, 'a post-teardown Configure invocation opens no modal');
+  assert.equal((h.documentListeners.keydown || []).length, 0, 'and binds no keydown trap');
 }
 
 // ── one authoritative store: raw keys are never written beside scoped settings ──

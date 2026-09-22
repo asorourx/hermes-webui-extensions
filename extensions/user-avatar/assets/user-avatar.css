@@ -92,11 +92,13 @@
 /* ── Configure panel (Settings → Extensions → Custom User Avatar) ─────────── */
 /* Extension-owned modal: Core hands the Configure handler an options object,
    never a host node, so the panel owns its own overlay, dialog semantics and
-   close paths (X / Escape / backdrop). Mirrors the Theme Creator shell. */
+   close paths (X / Escape / backdrop). z-index 1000 matches profile-avatars:
+   above Core's full-viewport mobile Settings drawer (200), below Core's own
+   confirm/app dialogs (1100). */
 .hwx-uav-overlay {
   position: fixed;
   inset: 0;
-  z-index: 70;
+  z-index: 1000;
   display: flex;
   align-items: center;
   justify-content: center;

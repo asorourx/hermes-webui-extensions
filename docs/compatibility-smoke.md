@@ -142,7 +142,7 @@ no-provider browser boundary, seeds a populated transcript through Core's own
 `.msg-actions` hover controls, not hand-built markup), and writes JSON,
 network, and screenshot evidence under `COMPATIBILITY_EVIDENCE_DIR`.
 
-It runs sixteen cases across a desktop viewport and 390x844 mobile viewport and
+It runs eighteen cases across a desktop viewport and 390x844 mobile viewport and
 requires:
 
 - **disabled pixel parity** — with the extension loaded but off, the captured
@@ -162,6 +162,21 @@ requires:
   to `false`;
 - **the rejected-upload path** — a GIF chosen in the real picker reports the
   accepted formats and leaves the stored image unchanged;
+- **modal stacking** — the topmost element at the backdrop click point and at
+  the card centre belongs to the modal, so it paints above Core's full-viewport
+  mobile Settings drawer;
+- **inline-form sync** — Core renders the same scoped settings again as the
+  inline form on each Extensions surface, and its Save writes every field. A
+  size chosen in Configure must appear in every inline copy and survive that
+  Save;
+- **attachments and edit mode** — two layout cases (desktop Hide, mobile
+  Compact) render a user turn with three image attachments through Core's own
+  `/api/file/raw` URL shape (stubbed only for an exact origin, path, seeded
+  session and filename, with each file required exactly once), then enter
+  edit mode through Core's `editMessage()`. The avatar must not overlap the
+  strip, first thumbnail, bubble, edit textarea or edit bar; the strip must
+  start at the bubble's gutter; the avatar hides only on the row being edited
+  and returns on Cancel;
 - populated proof at both viewports for consecutive turns, a long message, a
   fenced code block, a Markdown table, hover actions, light and dark, and an
   accessibility font size;

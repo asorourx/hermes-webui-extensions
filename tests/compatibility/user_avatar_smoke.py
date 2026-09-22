@@ -37,6 +37,7 @@ import struct
 import sys
 import tempfile
 import traceback
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
@@ -64,6 +65,7 @@ except ModuleNotFoundError:  # pragma: no cover - supports module execution.
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EXTENSION_ID = "user-avatar"
+COMPAT_SESSION_ID = "user-avatar-compat"
 DESKTOP_VIEWPORT = {"width": 1440, "height": 1000}
 MOBILE_VIEWPORT = {"width": 390, "height": 844}
 EXTENSION_RESOURCES = (
@@ -294,15 +296,16 @@ def _seed_transcript(page: Any, transcript: list[dict[str, Any]] | None = None) 
     against the genuine article.
     """
     count = page.evaluate(
-        """messages => {
+        """args => {
+          const messages = args.messages;
           if (typeof S === 'undefined' || typeof renderMessages !== 'function') return -1;
-          S.session = {session_id: 'user-avatar-compat', title: 'Compatibility'};
+          S.session = {session_id: args.sid, title: 'Compatibility'};
           S.messages = messages.map((message, index) => Object.assign({}, message, {idx: index}));
           S.busy = false;
           renderMessages();
           return document.querySelectorAll('.msg-row[data-role="user"]').length;
         }""",
-        transcript if transcript is not None else TRANSCRIPT,
+        {"messages": transcript if transcript is not None else TRANSCRIPT, "sid": COMPAT_SESSION_ID},
     )
     if count <= 0:
         raise CompatibilityFailure("Core's renderMessages did not produce user rows")
@@ -559,6 +562,23 @@ def _exercise_configure(page: Any, evidence_dir: Path, prefix: str,
     _open_configure(page)
     _assert_core_pending(page, expected=True, label="configure-reopen")
     box = page.locator(PANEL_SELECTOR).bounding_box()
+    # The overlay must paint above everything Core shows, including the fixed
+    # full-viewport Settings drawer on phones: the topmost element at both the
+    # backdrop click point and the card centre must belong to the modal.
+    stacking = page.evaluate(
+        """args => {
+          const panel = document.querySelector(args.panel);
+          const card = document.querySelector(args.card).getBoundingClientRect();
+          const probe = (x, y) => { const el = document.elementFromPoint(x, y);
+            return !!el && (el === panel || panel.contains(el)); };
+          return {backdrop: probe(args.x, args.y),
+                  card: probe(card.left + card.width / 2, card.top + card.height / 2)};
+        }""",
+        {"panel": PANEL_SELECTOR, "card": CARD_SELECTOR, "x": box["x"] + 6, "y": box["y"] + 6},
+    )
+    if not (stacking["backdrop"] and stacking["card"]):
+        raise CompatibilityFailure(f"the Configure modal is painted beneath Core UI: {stacking}")
+    results["stacking"] = stacking
     page.mouse.click(box["x"] + 6, box["y"] + 6)
     page.locator(PANEL_SELECTOR).wait_for(state="detached", timeout=5_000)
     _assert_core_pending(page, expected=False, label="configure-backdrop")
@@ -570,6 +590,32 @@ def _exercise_configure(page: Any, evidence_dir: Path, prefix: str,
     page.locator(PANEL_SELECTOR).wait_for(state="detached", timeout=5_000)
     _assert_core_pending(page, expected=False, label="configure-x")
     results["x_closed"] = True
+
+    # 7. Core renders the same scoped settings again as the inline form in this
+    #    extension's row, and its Save writes every field from that form. A size
+    #    chosen in Configure must survive a later inline Save, not be reverted by
+    #    a stale form value.
+    inline = f'[data-extension-id="{EXTENSION_ID}"] [data-extension-setting-input="size"]'
+    read_size = (f"() => window.HermesExtensionSettings.settingsForExtension('{EXTENSION_ID}').get('size')")
+    if not page.locator(inline).count():
+        raise CompatibilityFailure("Core did not render this extension's inline settings form")
+    start = page.evaluate(read_size)
+    target = "large" if start != "large" else "small"
+    _open_configure(page)
+    page.locator(f"{CARD_SELECTOR} select").first.select_option(target)
+    page.keyboard.press("Escape")
+    page.locator(PANEL_SELECTOR).wait_for(state="detached", timeout=5_000)
+    # Core renders one form copy per surface (Installed + Diagnostics); each has
+    # its own Save, so every copy must now show the Configure choice.
+    form_values = page.eval_on_selector_all(inline, "els => els.map(el => el.value)")
+    page.locator(f'#extensionsInstalled [data-extension-settings-save="{EXTENSION_ID}"]').click()
+    after_save = page.evaluate(read_size)
+    if any(v != target for v in form_values) or after_save != target:
+        raise CompatibilityFailure(
+            f"inline Save reverted a Configure choice: picked {target!r}, inline forms "
+            f"showed {form_values!r}, size after Save {after_save!r}"
+        )
+    results["inline_form_sync"] = {"picked": target, "forms": form_values, "after_save": after_save}
     return results
 
 
@@ -740,22 +786,38 @@ def _run_layout_case(*, browser: Any, base_url: str, evidence_dir: Path,
         # none, so answer exactly those requests with a real PNG; the thumbnails then
         # decode and lay out at their true size.
         pngs = {name: _attachment_png(i) for i, name in enumerate(ATTACHMENT_FILES)}
+        base = urllib.parse.urlsplit(base_url)
+        served: list[str] = []
+
+        def _is_attachment(url: str) -> bool:
+            # Exact match only: same origin as the Core under test, Core's own
+            # /api/file/raw route, the seeded session, and one of our filenames.
+            # Anything else falls through to the server and the network guard.
+            u = urllib.parse.urlsplit(url)
+            if (u.scheme, u.netloc) != (base.scheme, base.netloc) or u.path != "/api/file/raw":
+                return False
+            q = urllib.parse.parse_qs(u.query, keep_blank_values=True)
+            return (q.get("session_id") == [COMPAT_SESSION_ID]
+                    and len(q.get("path", [])) == 1 and q["path"][0] in pngs)
 
         def _fulfill(route: Any) -> None:
-            url = route.request.url
-            name = next(f for f in ATTACHMENT_FILES if f in url)
+            name = urllib.parse.parse_qs(urllib.parse.urlsplit(route.request.url).query)["path"][0]
+            served.append(name)
             route.fulfill(status=200, content_type="image/png", body=pngs[name])
 
-        page.route(
-            lambda url: "api/file/raw" in url and any(f in url for f in ATTACHMENT_FILES),
-            _fulfill,
-        )
+        page.route(_is_attachment, _fulfill)
         case["user_rows"] = _seed_transcript(page, ATTACHMENT_TRANSCRIPT)
         page.wait_for_function(
             """() => { const t = document.querySelectorAll('.msg-files img');
                        return t.length >= 3 && Array.from(t).every(img => img.complete && img.naturalWidth > 0); }""",
             timeout=10_000,
         )
+        if sorted(served) != sorted(ATTACHMENT_FILES):
+            raise CompatibilityFailure(
+                f"{name}: Core did not request each attachment exactly once through "
+                f"/api/file/raw for the seeded session (served {served!r})"
+            )
+        case["attachment_requests"] = sorted(served)
         # Frame the attachment turn (Core scrolls a fresh transcript to the bottom).
         page.evaluate(
             """selector => { const row = document.querySelector(selector);

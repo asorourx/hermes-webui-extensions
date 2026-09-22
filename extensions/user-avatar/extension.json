@@ -30,6 +30,8 @@
     "screenshots/desktop-light.png",
     "screenshots/desktop-large-font.png",
     "screenshots/desktop-hover.png",
+    "screenshots/desktop-layout-attachments.png",
+    "screenshots/desktop-layout-edit.png",
     "screenshots/desktop-configure.png",
     "screenshots/desktop-configure-keyboard.png",
     "screenshots/desktop-configure-error.png",
@@ -37,6 +39,8 @@
     "screenshots/mobile-compact.png",
     "screenshots/mobile-compact-light.png",
     "screenshots/mobile-disabled.png",
+    "screenshots/mobile-layout-attachments.png",
+    "screenshots/mobile-layout-edit.png",
     "screenshots/mobile-configure.png",
     "screenshots/mobile-configure-keyboard.png",
     "screenshots/mobile-configure-error.png"

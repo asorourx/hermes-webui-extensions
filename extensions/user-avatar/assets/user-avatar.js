@@ -120,10 +120,31 @@
       } catch (_) {}
       // An explicit new choice supersedes any raw value an older Core left behind.
       if (ok) { try { localStorage.removeItem(fallbackKey); } catch (_) {} }
+      if (ok) syncInlineSettingsForm(key);
       return ok;
     }
     try { localStorage.setItem(fallbackKey, String(value)); return true; }
     catch (_) { return false; }
+  }
+
+  // Core renders this extension's scoped settings again as the inline
+  // "Browser-local extension settings" form, once per Extensions surface that
+  // lists it (Installed and Diagnostics), each filled once at render with its own
+  // Save button that writes EVERY field from that form. After a Configure write
+  // every copy must show the new value, or a later Save would silently revert it.
+  // Only this extension's own rows and schema inputs are touched, and only their
+  // values (the forms stay Core's).
+  function syncInlineSettingsForm(key) {
+    try {
+      const value = settings.get(key);
+      document.querySelectorAll(`[data-extension-id="${EXT}"]`).forEach((row) => {
+        row.querySelectorAll('[data-extension-setting-input]').forEach((input) => {
+          if (input.dataset.extensionSettingInput !== key) return;
+          if (input.dataset.extensionSettingType === 'boolean') input.checked = !!value;
+          else input.value = value == null ? '' : String(value);
+        });
+      });
+    } catch (_) {}
   }
 
   // Validate a raw value written by an older Core. Returns undefined for junk.
@@ -391,6 +412,7 @@
   // must not compete for focus restoration on close.
   const PANEL_ID = 'hwx-uav-panel';
   let configureSettle = null;
+  let unregisterConfigure = null;            // Core's disposer for the Configure hook
   let panelKeydown = null;
 
   function settleConfigure() {
@@ -632,7 +654,10 @@
   function registerConfigure() {
     if (!settings || typeof settings.registerConfigure !== 'function') return;
     try {
-      settings.registerConfigure(() => new Promise((resolve) => {
+      const unregister = settings.registerConfigure(() => new Promise((resolve) => {
+        // After teardown the handler must stay inert even if Core still calls it
+        // (older Cores return no unregister): settle at once, open nothing.
+        if (!installed) { resolve(); return; }
         let opened = false;
         try { opened = openPanel(); } catch (_) { opened = false; }
         // Could not open, or an earlier invocation still owns settlement:
@@ -645,12 +670,17 @@
           resolve();
         };
       }));
+      unregisterConfigure = typeof unregister === 'function' ? unregister : null;
     } catch (_) {}
   }
 
   // ── lifecycle ────────────────────────────────────────────────────────────
   function teardown() {
     installed = false;                       // makes queued callbacks inert
+    if (unregisterConfigure) {               // Core drops the Configure button + handler
+      try { unregisterConfigure(); } catch (_) {}
+      unregisterConfigure = null;
+    }
     if (raf) { try { cancelAnimationFrame(raf); } catch (_) {} raf = 0; }
     if (observer) { try { observer.disconnect(); } catch (_) {} observer = null; }
     if (reconcileTimer) { try { clearInterval(reconcileTimer); } catch (_) {} reconcileTimer = 0; }
