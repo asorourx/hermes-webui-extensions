@@ -141,6 +141,17 @@ TRANSCRIPT = [
     },
 ]
 
+# A user turn with an attachment strip (rendered by Core as `.msg-files` ABOVE the
+# bubble) plus a plain follow-up, which is the row shape the edit-mode case edits.
+ATTACHMENT_FILES = ("run-1.png", "run-2.png", "run-3.png")
+ATTACHMENT_TRANSCRIPT = [
+    {"role": "user", "content": "Here are the three screenshots from the failing run.",
+     "attachments": list(ATTACHMENT_FILES)},
+    {"role": "assistant", "content": "Thanks — the second one shows the stale header."},
+    {"role": "user", "content": "Can you also check this one? It is a short follow-up message."},
+    {"role": "assistant", "content": "Sure."},
+]
+
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -273,7 +284,7 @@ def _boot_page(page: Any, base_url: str) -> None:
     )
 
 
-def _seed_transcript(page: Any) -> int:
+def _seed_transcript(page: Any, transcript: list[dict[str, Any]] | None = None) -> int:
     """Render a populated transcript through Core's own message pipeline.
 
     Seeding ``S.session``/``S.messages`` and calling Core's ``renderMessages()``
@@ -291,7 +302,7 @@ def _seed_transcript(page: Any) -> int:
           renderMessages();
           return document.querySelectorAll('.msg-row[data-role="user"]').length;
         }""",
-        TRANSCRIPT,
+        transcript if transcript is not None else TRANSCRIPT,
     )
     if count <= 0:
         raise CompatibilityFailure("Core's renderMessages did not produce user rows")
@@ -645,6 +656,179 @@ def _run_case(*, browser: Any, base_url: str, evidence_dir: Path, viewport: dict
         _write_json(evidence_dir / f"{name}-network.json", network_events)
 
 
+def _measure_collisions(page: Any) -> list[dict[str, Any]]:
+    """Per user row: the painted avatar box and its overlap with every sibling
+    Core renders in that row (attachment strip, bubble, edit textarea + bar)."""
+    return page.evaluate(
+        """selector => Array.from(document.querySelectorAll(selector)).map((row, i) => {
+          const b = getComputedStyle(row, '::before');
+          const rb = row.getBoundingClientRect();
+          const l = rb.left + (parseFloat(b.left) || 0), t = rb.top + (parseFloat(b.top) || 0);
+          const w = parseFloat(b.width) || 0, h = parseFloat(b.height) || 0;
+          const av = {l, t, r: l + w, b: t + h};
+          const hit = (el) => {
+            if (!el) return null;
+            const e = el.getBoundingClientRect();
+            const x = Math.max(0, Math.min(av.r, e.right) - Math.max(av.l, e.left));
+            const y = Math.max(0, Math.min(av.b, e.bottom) - Math.max(av.t, e.top));
+            return {overlap: Math.round(x * y), left: Math.round(e.left), top: Math.round(e.top)};
+          };
+          return {
+            i, editing: row.dataset.editing || null, display: b.display,
+            avatar: {left: Math.round(l), top: Math.round(t), right: Math.round(av.r), size: w},
+            files: hit(row.querySelector('.msg-files')),
+            firstThumb: hit(row.querySelector('.msg-files > *')),
+            body: hit(row.querySelector('.msg-body')),
+            editArea: hit(row.querySelector('.msg-edit-area')),
+            editBar: hit(row.querySelector('.msg-edit-bar')),
+          };
+        })""",
+        ROW_SELECTOR,
+    )
+
+
+def _assert_no_collisions(rows: list[dict[str, Any]], *, label: str) -> None:
+    for row in rows:
+        if row["display"] == "none":
+            continue
+        for part in ("files", "firstThumb", "body", "editArea", "editBar"):
+            box = row.get(part)
+            if box and box["overlap"]:
+                raise CompatibilityFailure(
+                    f"{label}: the avatar on user row {row['i']} overlaps its {part} "
+                    f"by {box['overlap']}px² (avatar {row['avatar']}, {part} {box})"
+                )
+
+
+def _attachment_png(seed: int, width: int = 240, height: int = 180) -> bytes:
+    """A small, visibly distinct 'screenshot' PNG (stdlib only) for attachment thumbnails."""
+    import zlib
+    rows = []
+    for y in range(height):
+        row = bytearray([0])
+        for x in range(width):
+            bar = y < 22                                  # a title bar strip
+            r = 40 + (x * 90 // width) + seed * 40
+            g = 60 + (y * 80 // height)
+            b = 120 + seed * 35
+            if bar:
+                r, g, b = 28, 30, 44
+            elif (y - 40) % 26 < 10 and 16 < x < width - 16 - seed * 30:
+                r, g, b = r + 60, g + 60, b + 60           # 'text' lines
+            row += bytes((min(r, 255), min(g, 255), min(b, 255)))
+        rows.append(bytes(row))
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return (struct.pack(">I", len(data)) + kind + data
+                + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF))
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(b"".join(rows), 9))
+            + chunk(b"IEND", b""))
+
+
+def _run_layout_case(*, browser: Any, base_url: str, evidence_dir: Path,
+                     viewport: dict[str, int], name: str, mobile: str) -> dict[str, Any]:
+    """Attachment strip + edit mode, the two row shapes the main matrix never renders."""
+    init_script = _init_script(enabled=True, size="medium", mobile=mobile, image=True,
+                               theme="dark", font_size="default", skin="")
+    context, page, network_events, console_errors, page_errors = _new_page(browser, viewport, init_script)
+    case: dict[str, Any] = {"viewport": dict(viewport), "settings": {"mobile": mobile}}
+    try:
+        _boot_page(page, base_url)
+        # Core renders attachments as `api/file/raw?session_id=…&path=…`, which only
+        # resolves for a persisted session. The synthetic compatibility session has
+        # none, so answer exactly those requests with a real PNG; the thumbnails then
+        # decode and lay out at their true size.
+        pngs = {name: _attachment_png(i) for i, name in enumerate(ATTACHMENT_FILES)}
+
+        def _fulfill(route: Any) -> None:
+            url = route.request.url
+            name = next(f for f in ATTACHMENT_FILES if f in url)
+            route.fulfill(status=200, content_type="image/png", body=pngs[name])
+
+        page.route(
+            lambda url: "api/file/raw" in url and any(f in url for f in ATTACHMENT_FILES),
+            _fulfill,
+        )
+        case["user_rows"] = _seed_transcript(page, ATTACHMENT_TRANSCRIPT)
+        page.wait_for_function(
+            """() => { const t = document.querySelectorAll('.msg-files img');
+                       return t.length >= 3 && Array.from(t).every(img => img.complete && img.naturalWidth > 0); }""",
+            timeout=10_000,
+        )
+        # Frame the attachment turn (Core scrolls a fresh transcript to the bottom).
+        page.evaluate(
+            """selector => { const row = document.querySelector(selector);
+                             row.scrollIntoView({block: 'start'}); window.scrollBy(0, -8); }""",
+            ROW_SELECTOR,
+        )
+        page.wait_for_timeout(150)
+        plain = _measure_collisions(page)
+        if not (plain[0].get("files") and plain[0]["display"] != "none"):
+            raise CompatibilityFailure(f"{name}: the attachment row did not render a decorated strip")
+        _assert_no_collisions(plain, label=f"{name}-attachments")
+        # The strip must start at the same reserved gutter as the bubble below it.
+        if plain[0]["files"]["left"] != plain[0]["body"]["left"]:
+            raise CompatibilityFailure(
+                f"{name}: attachment strip starts at x={plain[0]['files']['left']} but its "
+                f"bubble at x={plain[0]['body']['left']}; both must share the reserved gutter"
+            )
+        case["attachments"] = plain
+        case["attachments_screenshot"] = _shot(page, evidence_dir / f"{name}-attachments.png")
+
+        # Enter edit mode on the plain follow-up through Core's own editMessage().
+        page.evaluate(
+            """selector => { const row = document.querySelectorAll(selector)[1];
+                             editMessage(row.querySelector('.msg-body')); }""",
+            ROW_SELECTOR,
+        )
+        page.wait_for_selector(f"{ROW_SELECTOR}[data-editing='1'] .msg-edit-area", timeout=5_000)
+        editing = _measure_collisions(page)
+        edited = editing[1]
+        if edited["editing"] != "1" or edited["display"] != "none":
+            raise CompatibilityFailure(
+                f"{name}: the avatar must be hidden while its row is being edited "
+                f"(editing={edited['editing']}, display={edited['display']})"
+            )
+        if editing[0]["display"] == "none":
+            raise CompatibilityFailure(f"{name}: editing one row hid the avatar on another")
+        _assert_no_collisions(editing, label=f"{name}-edit")
+        case["edit"] = editing
+        case["edit_screenshot"] = _shot(page, evidence_dir / f"{name}-edit.png")
+
+        # Cancelling restores the decoration.
+        page.locator(f"{ROW_SELECTOR}[data-editing='1'] .msg-edit-cancel").click()
+        page.wait_for_function(
+            "selector => !document.querySelector(selector + '[data-editing]')",
+            arg=ROW_SELECTOR, timeout=5_000,
+        )
+        restored = _measure_collisions(page)
+        if restored[1]["display"] == "none":
+            raise CompatibilityFailure(f"{name}: the avatar did not return after cancelling the edit")
+        _assert_no_collisions(restored, label=f"{name}-after-cancel")
+        _assert_browser_health(
+            case_name=f"user-avatar-{name}",
+            console_errors=console_errors,
+            page_errors=page_errors,
+            extension_fragments=EXTENSION_RESOURCES,
+            network_events=network_events,
+        )
+        case["status"] = "passed"
+        return case
+    except Exception:
+        try:
+            _shot(page, evidence_dir / f"{name}-failure.png")
+        except Exception:
+            pass
+        raise
+    finally:
+        try:
+            context.close()
+        except Exception:
+            pass
+        _write_json(evidence_dir / f"{name}-network.json", network_events)
+
+
 def _assert_pixel_parity(evidence_dir: Path, disabled: str, stock: str) -> dict[str, Any]:
     """Disabled must be byte-identical to a page where the extension never decorates."""
     a = evidence_dir / f"{disabled}-transcript.png"
@@ -762,6 +946,14 @@ def main() -> int:
                                 browser=browser, base_url=base_url,
                                 evidence_dir=evidence_dir, name=name, **spec,
                             )
+                        for name, viewport, mobile in (
+                            ("desktop-layout", DESKTOP_VIEWPORT, "hide"),
+                            ("mobile-layout", MOBILE_VIEWPORT, "compact"),
+                        ):
+                            results["cases"][name] = _run_layout_case(
+                                browser=browser, base_url=base_url, evidence_dir=evidence_dir,
+                                viewport=viewport, name=name, mobile=mobile,
+                            )
                         results["pixel_parity"] = {
                             "desktop": _assert_pixel_parity(evidence_dir, "desktop-disabled", "desktop-stock"),
                             "mobile": _assert_pixel_parity(evidence_dir, "mobile-disabled", "mobile-stock"),
@@ -790,6 +982,11 @@ def main() -> int:
                     copied.append(shot["path"])
                 for key in ("open_screenshot", "keyboard_screenshot", "error_screenshot"):
                     extra = (case.get("configure") or {}).get(key)
+                    if extra:
+                        shutil.copyfile(evidence_dir / extra["path"], target / extra["path"])
+                        copied.append(extra["path"])
+                for key in ("attachments_screenshot", "edit_screenshot"):
+                    extra = case.get(key)
                     if extra:
                         shutil.copyfile(evidence_dir / extra["path"], target / extra["path"])
                         copied.append(extra["path"])

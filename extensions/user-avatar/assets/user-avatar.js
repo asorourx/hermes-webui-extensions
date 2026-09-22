@@ -100,10 +100,12 @@
   //   * Core WITHOUT scoped settings: the raw keys are the store.
   // A raw key found while scoped settings are available was therefore written by
   // an older Core (or by a pre-release build of this extension that mirrored
-  // them). migrateLegacyScalars() folds it in once on load: it fills a setting
-  // only when the user has no explicit scoped choice for it — an explicit choice
-  // always wins — and then deletes the raw key, so it is considered exactly once
-  // and can never later resurrect an old value over a native Save or Reset.
+  // them). migrateLegacyScalars() folds it in once on load: a scoped value that
+  // differs from the schema default always wins; otherwise the raw value is
+  // adopted. Core stores a setting equal to its default as "no override", so a
+  // scoped choice of the default is indistinguishable from unset and a raw value
+  // wins over it that one time. The raw key is then deleted, so it is considered
+  // exactly once and cannot resurrect later over a native Save or Reset.
   // The cost, disclosed in the README: a choice made on a modern Core is not
   // visible to an older Core that later reads the same browser.
   //
@@ -133,10 +135,11 @@
   }
 
   // Fold raw scalars from an older Core into scoped settings, before the first
-  // apply(). `settings.overrides` holds only the keys the user explicitly set
-  // (settings.get() answers a schema default for the rest), which is what lets an
-  // explicit choice win. A raw key is deleted once it has been considered — adopted,
-  // superseded by an explicit choice, or junk — and kept only when adopting it was
+  // apply(). `settings.overrides` holds only the keys whose value differs from the
+  // schema default (settings.get() answers the default for the rest), so a
+  // non-default scoped choice wins and a default-equal one reads as unset. A raw
+  // key is deleted once it has been considered — adopted, superseded by a
+  // non-default scoped value, or junk — and kept only when adopting it was
   // refused, so a storage failure never loses the value (retried on the next load,
   // the same idiom as migrateLegacyImage()).
   function migrateLegacyScalars() {

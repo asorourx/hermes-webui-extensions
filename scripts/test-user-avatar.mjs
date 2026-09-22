@@ -827,11 +827,20 @@ const RAW = { enabled: 'hermes-ext-user-avatar-enabled', size: 'hermes-ext-user-
   assert.equal(h.api().isEnabled(), false, 'a native Reset after the upgrade is not resurrected');
 }
 {
-  // An explicit scoped choice always wins over an older-Core raw value.
+  // A non-default scoped value always wins over an older-Core raw value.
   const h = createHarness({ settingsSchemaDefaults: DEFAULTS, scoped: { size: 'small' },
     legacyScalars: { [RAW.size]: 'large' } });
-  assert.equal(h.settingsBackend.get('size'), 'small', 'the explicit scoped size is kept');
+  assert.equal(h.settingsBackend.get('size'), 'small', 'the non-default scoped size is kept');
   assert.equal(h.store.has(RAW.size), false, 'the superseded raw key is deleted, not kept around');
+}
+{
+  // Disclosed limitation: Core records a default-equal value as "no override", so a
+  // scoped value equal to the default reads as unset and the raw value wins once.
+  const h = createHarness({ settingsSchemaDefaults: DEFAULTS, scoped: { size: 'medium' },
+    legacyScalars: { [RAW.size]: 'large' } });
+  assert.equal(h.settingsBackend.get('size'), 'large',
+    'a default-equal scoped value is indistinguishable from unset (README discloses this)');
+  assert.equal(h.store.has(RAW.size), false, 'and the raw key is consumed, so it happens once');
 }
 {
   // Junk raw values are dropped, not adopted.

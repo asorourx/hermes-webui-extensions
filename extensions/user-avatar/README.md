@@ -80,6 +80,8 @@ pipeline, and measures the painted result — see
 | `desktop-light.png` | light theme |
 | `desktop-large-font.png` | the `large` accessibility font size |
 | `desktop-hover.png` | Core's `.msg-actions` hover controls over a decorated row |
+| `desktop-layout-attachments.png` | a user turn with three image attachments — the strip shares the bubble's reserved gutter, no overlap |
+| `desktop-layout-edit.png` | a user turn in edit mode — its avatar is hidden and the textarea uses the full row; other turns keep theirs |
 | `desktop-configure.png` | the Configure modal, first control focused |
 | `desktop-configure-keyboard.png` | Tab wrapped by the focus trap |
 | `desktop-configure-error.png` | a rejected upload reporting the accepted formats |
@@ -90,6 +92,8 @@ pipeline, and measures the painted result — see
 | `mobile-hide.png` | narrow-screen **Hide** — avatar and gutter both collapse |
 | `mobile-compact.png` | narrow-screen **Compact** — 20px avatar, bubble keeps width |
 | `mobile-compact-light.png` | the same in light theme |
+| `mobile-layout-attachments.png` | attachments at 390px in Compact mode |
+| `mobile-layout-edit.png` | edit mode at 390px in Compact mode |
 | `mobile-configure.png` | the Configure modal at 390px |
 | `mobile-configure-keyboard.png` | the focus trap at 390px |
 | `mobile-configure-error.png` | the rejected-upload state at 390px |
@@ -171,9 +175,11 @@ Also exposed on `window.HermesUserAvatarExtension`:
   defaults, and switching the extension off only disables the decoration. On a
   Core without scoped settings the scalars live in `hermes-ext-user-avatar-*`
   localStorage keys instead. When you later upgrade to a Core that has scoped
-  settings, those keys are folded in once on load (only for settings you have not
-  already chosen there) and then deleted, so a native Save or Reset is never
-  overridden by an old value. The migration is one-way: a choice made on a
+  settings, those keys are folded in once on load and then deleted. A scoped value
+  that differs from its default always wins over them. Core records a setting left
+  at (or reset to) its default as "not set", so the older value is adopted over it
+  that one time. Because the keys are deleted afterwards, a later native Save or
+  Reset is never overridden by them. The migration is one-way: a choice made on a
   modern Core is not visible to an older Core that later reads the same browser.
   A pre-0.2.0 image stored under the raw `hermes-ext-user-avatar` key is migrated
   into scoped storage once on load and the raw key is then deleted.
