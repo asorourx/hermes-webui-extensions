@@ -165,11 +165,12 @@ Also exposed on `window.HermesUserAvatarExtension`:
   `HERMES_WEBUI_EXTENSION_MANIFEST` variables, or remove the
   `extensions/user-avatar/` directory. Note that **uninstalling only removes the
   extension's files and its manifest entry — it does not clear browser-local data.**
-  Your image and settings live in the browser (the extension's scoped storage
-  namespace), so to remove them use **Settings → Clear extension storage** *before*
-  uninstalling. A pre-0.2.0 image stored under the raw `hermes-ext-user-avatar`
-  localStorage key is migrated into scoped storage once on load, and the raw key is
-  then deleted.
+  Your image lives in the extension's scoped storage namespace, so **Settings →
+  Clear extension storage** removes it. The enable/size/mobile scalars are
+  *settings*, not storage, so they are cleared by **Reset settings** (or by
+  switching the extension off) rather than by clearing storage. A pre-0.2.0 image
+  stored under the raw `hermes-ext-user-avatar` localStorage key is migrated into
+  scoped storage once on load, and the raw key is then deleted.
 
 ## Trust And Permissions
 

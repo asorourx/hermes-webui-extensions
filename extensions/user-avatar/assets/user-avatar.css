@@ -24,9 +24,10 @@
   --hwx-uav-img: none;                  /* set to url("data:image/…") when an image exists */
 }
 
-/* Reserve space to the left of the bubble and anchor the pseudo-element. The row
-   already establishes a containing block via `contain: layout`, so adding
-   position:relative is a no-op for core's own positioned descendants. */
+/* Reserve space to the left of the bubble and anchor the pseudo-element.
+   `position:relative` is what establishes the containing block for the avatar on
+   every viewport — core only applies `contain:layout` to these rows inside
+   `@media (pointer: coarse)`, so desktop has no containment of its own. */
 :root[data-hwx-uav-on] .msg-row[data-role="user"][data-hwx-uav] {
   position: relative;
 }

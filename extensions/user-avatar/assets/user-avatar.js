@@ -94,56 +94,30 @@
     } catch (_) {}
     return dflt;
   }
+  // Mirror write: the scoped setting is authoritative when supported, and the raw
+  // localStorage key is kept as a synchronised shadow copy so an older Core (which
+  // has no scoped settings) still reads the user's current choice. Keeping both in
+  // step is what makes this safe -- there is never an orphaned raw value to
+  // reconcile, so no migration or conflict resolution is required.
+  //
+  // Returns whether the value is actually retrievable afterwards. readScalar()
+  // falls back to the raw key when the scoped store has no value, so a refused
+  // scoped write whose shadow copy succeeded has still persisted the choice;
+  // reporting that as a failure would be wrong. Only a write that reached neither
+  // store is a real failure.
   function writeScalar(key, fallbackKey, value) {
-    // Exactly one backing store is authoritative at a time. When scoped settings
-    // are supported they own the value: a successful write also drops any stale
-    // raw key, so a later downgrade to an older Core cannot resurrect a value the
-    // user has since changed. When a supported scoped write FAILS we deliberately
-    // do not write the raw key either — readScalar() prefers scoped (which returns
-    // a schema default), so the raw value would be unreadable now and misleading
-    // later. Raw keys are written only on Core builds without scoped settings.
+    let ok = false;
     if (settingsSupported) {
-      let ok = false;
       try {
         const res = settings.set(key, value);
         ok = !!(res && typeof res === 'object' ? res.ok === true : res !== false);
       } catch (_) {}
-      if (ok) { try { localStorage.removeItem(fallbackKey); } catch (_) {} }
-      return ok;
     }
-    try { localStorage.setItem(fallbackKey, String(value)); } catch (_) {}
-    return true;
+    let rawOk = false;
+    try { localStorage.setItem(fallbackKey, String(value)); rawOk = true; } catch (_) {}
+    return ok || rawOk;
   }
 
-  // Move pre-scoped-settings raw scalar values into scoped settings exactly once,
-  // mirroring migrateLegacyImage(). Without this, a user upgrading to a Core with
-  // scoped settings silently loses their saved scalars: readScalar() prefers the
-  // scoped value, and Core answers with a schema DEFAULT rather than undefined, so
-  // the raw key is never consulted again.
-  //
-  // Because Core returns a schema default for an unset key, "has the user already
-  // chosen a scoped value?" cannot be answered by reading it. We therefore treat the
-  // raw key as the authority when it exists: it can only exist if this browser ran a
-  // build without scoped settings and the user changed something there, and
-  // writeScalar() deletes it on every successful scoped write. Only drop the raw key
-  // once the scoped write succeeded, so a failure never loses the value.
-  function migrateLegacyScalars() {
-    if (!settingsSupported) return;
-    [['enabled', FALLBACK.enabled, true], ['size', FALLBACK.size, false],
-     ['mobile', FALLBACK.mobile, false]].forEach(function (entry) {
-      const key = entry[0], fallbackKey = entry[1], isBool = entry[2];
-      let raw = null;
-      try { raw = localStorage.getItem(fallbackKey); } catch (_) { return; }
-      if (raw === null) return;
-      const value = isBool ? raw === 'true' : raw;
-      let done = false;
-      try {
-        const res = settings.set(key, value);
-        done = !!(res && typeof res === 'object' ? res.ok === true : res !== false);
-      } catch (_) { done = false; }
-      if (done) { try { localStorage.removeItem(fallbackKey); } catch (_) {} }
-    });
-  }
 
   function isEnabled() { return readScalar('enabled', FALLBACK.enabled, false) !== false; }
   function sizeName() {
@@ -546,7 +520,14 @@
     enableRow.appendChild(enableBox);
     enableRow.appendChild(enableTxt);
     enableBox.addEventListener('change', () => {
-      writeScalar('enabled', FALLBACK.enabled, enableBox.checked);
+      // A refused write must not leave the control showing a value that was never
+      // stored; restore it to the authoritative value and say what happened.
+      if (writeScalar('enabled', FALLBACK.enabled, enableBox.checked)) {
+        status.textContent = '';
+      } else {
+        enableBox.checked = isEnabled();
+        status.textContent = 'Could not save that setting.';
+      }
       apply();
     });
     card.appendChild(enableRow);
@@ -554,11 +535,27 @@
     // size + mobile selects
     card.appendChild(makeSelect('Avatar size', [
       ['small', 'Small'], ['medium', 'Medium'], ['large', 'Large'],
-    ], sizeName(), (v) => { writeScalar('size', FALLBACK.size, v); apply(); }));
+    ], sizeName(), (v, sel) => {
+      if (writeScalar('size', FALLBACK.size, v)) {
+        status.textContent = '';
+      } else {
+        sel.value = sizeName();
+        status.textContent = 'Could not save that setting.';
+      }
+      apply();
+    }));
 
     card.appendChild(makeSelect('On narrow screens', [
       ['hide', 'Hide'], ['compact', 'Compact'],
-    ], mobileMode(), (v) => { writeScalar('mobile', FALLBACK.mobile, v); apply(); }));
+    ], mobileMode(), (v, sel) => {
+      if (writeScalar('mobile', FALLBACK.mobile, v)) {
+        status.textContent = '';
+      } else {
+        sel.value = mobileMode();
+        status.textContent = 'Could not save that setting.';
+      }
+      apply();
+    }));
 
     card.appendChild(status);
     return overlay;
@@ -580,7 +577,7 @@
       if (value === current) opt.selected = true;
       select.appendChild(opt);
     });
-    select.addEventListener('change', () => onChange(select.value));
+    select.addEventListener('change', () => onChange(select.value, select));
     row.appendChild(lab);
     row.appendChild(select);
     return row;
@@ -625,7 +622,6 @@
     attempt = attempt || 0;
     if (document.getElementById('messages') || document.querySelector(ROW_SELECTOR)) {
       installed = true;
-      migrateLegacyScalars();
       migrateLegacyImage();
       startObserver();
       startReconcile();

@@ -120,7 +120,11 @@ function createHarness({
   image = null,
   legacyScalars = null,
   settingsSchemaDefaults = null,
+  settingsWritesFail = false,
+  localWritesFail = false,
 } = {}) {
+  let failSettings = settingsWritesFail;
+  let failLocal = localWritesFail;
   canvasDraws = [];
   canvasPng = PNG;
   canvasJpeg = PNG2;
@@ -152,7 +156,10 @@ function createHarness({
       }
       return v;
     },
-    set(key, value) { settingsBackend.set(key, value); return { ok: true }; },
+    set(key, value) {
+      if (failSettings) return { ok: false };
+      settingsBackend.set(key, value); return { ok: true };
+    },
     registerConfigure(fn) { configureHook = fn; },
   } : undefined;
 
@@ -216,7 +223,7 @@ function createHarness({
 
   const localStorage = {
     getItem(k) { return store.has(k) ? store.get(k) : null; },
-    setItem(k, v) { store.set(k, String(v)); },
+    setItem(k, v) { if (failLocal) throw new Error('QuotaExceededError'); store.set(k, String(v)); },
     removeItem(k) { store.delete(k); },
   };
 
@@ -264,6 +271,7 @@ function createHarness({
     fileReaders, images,
     api: () => window.HermesUserAvatarExtension,
     configureHook: () => configureHook,
+    failWrites: () => { failSettings = true; failLocal = true; },
     panel: () => document.getElementById(PANEL_ID),
     flushRafs() {
       const queued = Array.from(rafs.entries());
@@ -531,6 +539,56 @@ async function runFile(h, file, { width = 64, height = 64, failRead = false, fai
   assert.equal(failing.api().getImage(), PNG2, 'the previous image survives a failed publication');
 }
 
+// ── CONFIGURE: a refused settings write must not leave a lying control ──────
+// Both stores must refuse for this to be a real failure: the raw localStorage key
+// is a synchronised shadow, so a scoped refusal alone still persists the choice.
+// Without the guard the checkbox/select keeps showing a value that was never
+// stored or applied — a silent, misleading no-op.
+{
+  const h = createHarness({ settingsWritesFail: true, localWritesFail: true });
+  const core = coreConfigure(h);
+  core.invoke();
+  const box = h.panel().querySelector('input:not([type="file"])');
+  const wasEnabled = h.api().isEnabled();
+  box.checked = !wasEnabled;
+  box.emit('change', {});
+  assert.equal(box.checked, wasEnabled,
+    'a refused write restores the checkbox to the authoritative value');
+  assert.equal(h.api().isEnabled(), wasEnabled,
+    'a refused write does not change the effective state');
+  assert.equal(panelControl(h, 'hwx-uav-status').textContent,
+    'Could not save that setting.',
+    'a refused write reports the failure instead of silently doing nothing');
+  // The select must also revert. Enable first (via the API, which bypasses the
+  // panel) so a real size is applied and "unchanged" is a meaningful assertion
+  // rather than trivially true against an unset custom property.
+  const h2 = createHarness();
+  const core2 = coreConfigure(h2);
+  h2.api().setEnabled(true);
+  core2.invoke();
+  const appliedSize = h2.rootEl.style.getPropertyValue('--hwx-uav-size');
+  assert.equal(appliedSize, '32px', 'medium is applied before the refused write');
+  h2.failWrites();
+  const sel = h2.panel().querySelectorAll('select')[0];
+  sel.value = 'large';
+  sel.emit('change', {});
+  assert.equal(sel.value, 'medium',
+    'a refused select write restores the select to the authoritative value');
+  assert.equal(h2.rootEl.style.getPropertyValue('--hwx-uav-size'), '32px',
+    'a refused select write does not apply the unsaved value');
+  assert.equal(panelControl(h2, 'hwx-uav-status').textContent,
+    'Could not save that setting.',
+    'a refused select write reports the failure');
+  // Same guard on the narrow-screen select.
+  const selMobile = h2.panel().querySelectorAll('select')[1];
+  selMobile.value = 'compact';
+  selMobile.emit('change', {});
+  assert.equal(selMobile.value, 'hide',
+    'a refused narrow-screen write restores the select to the authoritative value');
+  assert.equal(h2.rootEl.getAttribute('data-hwx-uav-mobile'), 'hide',
+    'a refused narrow-screen write does not apply the unsaved value');
+}
+
 // ── CONFIGURE: Core's real contract, settled exactly once ───────────────────
 {
   const h = createHarness();
@@ -718,41 +776,18 @@ async function runFile(h, file, { width = 64, height = 64, failRead = false, fai
   assert.equal((h.documentListeners.keydown || []).length, 0, 'teardown unbinds the keydown trap');
 }
 
-// ── upgrade path: raw scalar fallbacks migrate into scoped settings exactly once ──
-// Regression cover for the case where a browser ran an older Core (no scoped
-// settings), the user's choices landed in the raw localStorage keys, and Core is then
-// upgraded. readScalar() prefers scoped settings and real Core answers a schema
-// DEFAULT for an unset key, so without migration the saved values become unreachable.
+// ── mirror-write: scoped and raw fallback stay in sync, so no migration is needed ──
+// The raw localStorage key is a synchronised shadow of the scoped setting rather than
+// a legacy store, so an older Core reading the same browser always sees the current
+// value and there is never an orphaned value to reconcile.
 {
-  const h = createHarness({
-    legacyScalars: {
-      'hermes-ext-user-avatar-enabled': 'true',
-      'hermes-ext-user-avatar-size': 'large',
-      'hermes-ext-user-avatar-mobile': 'compact',
-    },
-    settingsSchemaDefaults: { enabled: false, size: 'medium', mobile: 'hide' },
-  });
-  assert.equal(h.api().isEnabled(), true,
-    'a pre-upgrade enabled=true survives the move to scoped settings');
-  assert.equal(h.rootEl.style.getPropertyValue('--hwx-uav-size'), '44px',
-    'a pre-upgrade size=large survives the move to scoped settings');
-  assert.equal(h.store.has('hermes-ext-user-avatar-enabled'), false,
-    'the raw enabled key is removed once migrated');
-  assert.equal(h.store.has('hermes-ext-user-avatar-size'), false,
-    'the raw size key is removed once migrated');
-  assert.equal(h.store.has('hermes-ext-user-avatar-mobile'), false,
-    'the raw mobile key is removed once migrated');
-}
-{
-  // A successful scoped write must not leave (or re-create) a raw key, so a later
-  // downgrade cannot resurrect a value the user has since changed. Write the raw key
-  // AFTER install so the one-time migration has already run and cannot be what
-  // removes it — otherwise this assertion passes vacuously.
-  const h = createHarness();
-  h.store.set('hermes-ext-user-avatar-enabled', 'false');
+  const h = createHarness({ settingsSchemaDefaults: { enabled: false, size: 'medium', mobile: 'hide' } });
   h.api().setEnabled(true);
-  assert.equal(h.store.has('hermes-ext-user-avatar-enabled'), false,
-    'a successful scoped write clears any stale raw key');
+  assert.equal(h.store.get('hermes-ext-user-avatar-enabled'), 'true',
+    'a scoped write also refreshes the raw shadow copy for older Core');
+  h.api().setEnabled(false);
+  assert.equal(h.store.get('hermes-ext-user-avatar-enabled'), 'false',
+    'the raw shadow copy tracks later changes instead of going stale');
 }
 
 // ── graceful degrade: no hermesExt settings -> localStorage fallback works ──
