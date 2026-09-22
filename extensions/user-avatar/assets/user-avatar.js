@@ -100,6 +100,10 @@
         const res = settings.set(key, value);
         ok = !!(res && typeof res === 'object' ? res.ok === true : res !== false);
       } catch (_) {}
+      // Scoped settings are authoritative when available; writing the raw
+      // fallback key here too would contradict the documented behaviour that
+      // these keys are only used on older Core builds.
+      if (ok) return true;
     }
     try { localStorage.setItem(fallbackKey, String(value)); } catch (_) {}
     return ok || !settingsSupported;

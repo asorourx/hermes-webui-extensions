@@ -17,7 +17,10 @@ either extension's storage, and it adds no assistant-avatar path.
   extension's own scoped storage namespace; it never leaves the browser.
 - Re-applies to current and newly rendered user turns through a bounded, idempotent
   `MutationObserver` — no duplicate nodes, no observer loops.
-- Fully reversible: disabling, reloading, or uninstalling removes all decoration.
+- Fully reversible: disabling removes all decoration and the transcript is
+  pixel-identical to stock. The enabled state and your image persist across reloads by
+  design, so a reload keeps the decoration; only disabling (or clearing the extension's
+  storage) returns the transcript to stock.
 
 ## Controls
 
@@ -157,10 +160,13 @@ Also exposed on `window.HermesUserAvatarExtension`:
   immediately and the transcript is pixel-identical to stock.
 - **Uninstall:** restart Hermes WebUI without the `HERMES_WEBUI_EXTENSION_DIR` /
   `HERMES_WEBUI_EXTENSION_MANIFEST` variables, or remove the
-  `extensions/user-avatar/` directory. Your image lives in the extension's scoped
-  storage namespace, so **Settings → Clear extension storage** and uninstall remove it.
-  A pre-0.2.0 image stored under the raw `hermes-ext-user-avatar` localStorage key is
-  migrated into scoped storage once on load, and the raw key is then deleted.
+  `extensions/user-avatar/` directory. Note that **uninstalling only removes the
+  extension's files and its manifest entry — it does not clear browser-local data.**
+  Your image and settings live in the browser (the extension's scoped storage
+  namespace), so to remove them use **Settings → Clear extension storage** *before*
+  uninstalling. A pre-0.2.0 image stored under the raw `hermes-ext-user-avatar`
+  localStorage key is migrated into scoped storage once on load, and the raw key is
+  then deleted.
 
 ## Trust And Permissions
 

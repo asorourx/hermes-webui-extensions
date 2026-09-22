@@ -7,9 +7,13 @@
    rebuild every render) and get wiped on the next reconcile. Instead the extension
    only sets element-level state core does not reconcile — a per-row [data-hwx-uav]
    attribute plus custom properties on :root — and the avatar is drawn with a
-   ::before pseudo-element. User rows also carry `content-visibility:auto`, whose
-   paint containment clips anything drawn outside the row box, so the avatar is drawn
-   INSIDE the row (the bubble yields a little width for it) rather than in the gutter.
+   ::before pseudo-element.
+
+   Placement: user rows are `align-self:flex-end` inside a COLUMN flex container, so
+   the row box is shrink-to-fit around the bubble rather than full-width. `left:0` on
+   the row therefore coincides with the reserved gutter immediately left of the
+   bubble. (Core's `content-visibility:auto` containment on user rows applies only
+   under `@media (pointer: coarse)`; it is not what keeps the avatar in place.)
 
    Everything is gated on :root[data-hwx-uav-on]; with it absent the transcript is
    pixel-identical to stock. All classes/vars are hwx-uav-* namespaced. */
@@ -28,6 +32,24 @@
 }
 :root[data-hwx-uav-on] .msg-row[data-role="user"][data-hwx-uav] .msg-body {
   margin-left: calc(var(--hwx-uav-size) + var(--hwx-uav-gap));
+}
+/* Core emits the attachments strip BEFORE .msg-body inside the row and zeroes its
+   left margin for user rows (`.msg-row[data-role="user"] .msg-files`), so a wide
+   strip (3+ thumbnails) extends further left than the bubble and the avatar would
+   paint over the first thumbnail. Reserve the same gutter on the strip. */
+:root[data-hwx-uav-on] .msg-row[data-role="user"][data-hwx-uav] .msg-files {
+  margin-left: calc(var(--hwx-uav-size) + var(--hwx-uav-gap));
+}
+/* Edit mode: Core makes the row full-width (`.msg-row[data-editing="1"]`) and the
+   textarea's left margin is --msg-rail (0), so the avatar would sit on top of the
+   textarea's left edge. Suppress the decoration while editing and release the
+   reserved gutter so the editor keeps its full width. */
+:root[data-hwx-uav-on] .msg-row[data-role="user"][data-hwx-uav][data-editing="1"]::before {
+  display: none;
+}
+:root[data-hwx-uav-on] .msg-row[data-role="user"][data-hwx-uav][data-editing="1"] .msg-body,
+:root[data-hwx-uav-on] .msg-row[data-role="user"][data-hwx-uav][data-editing="1"] .msg-files {
+  margin-left: 0;
 }
 :root[data-hwx-uav-on] .msg-row[data-role="user"][data-hwx-uav]::before {
   content: "";
@@ -54,6 +76,9 @@
     display: none;
   }
   :root[data-hwx-uav-on][data-hwx-uav-mobile="hide"] .msg-row[data-role="user"][data-hwx-uav] .msg-body {
+    margin-left: 0;
+  }
+  :root[data-hwx-uav-on][data-hwx-uav-mobile="hide"] .msg-row[data-role="user"][data-hwx-uav] .msg-files {
     margin-left: 0;
   }
   /* compact: shrink the avatar (and its reserved gutter) so the bubble keeps width */
