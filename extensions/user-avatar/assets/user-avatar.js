@@ -28,8 +28,9 @@
 
   // Owned storage (declared in extension.json permissions.storage.owned:true).
   // The image lives in the sanctioned scoped namespace so that Settings →
-  // "Clear extension storage" and uninstall actually remove it. LEGACY_IMAGE_KEY
-  // is the pre-0.2.0 raw key: read once, migrated, then deleted.
+  // "Clear extension storage" removes it. (Uninstalling only removes the
+  // extension's files and manifest entry — it does not clear browser storage.)
+  // LEGACY_IMAGE_KEY is the pre-0.2.0 raw key: read once, migrated, then deleted.
   const IMAGE_NAME = 'image';
   const LEGACY_IMAGE_KEY = 'hermes-ext-user-avatar';
   const FALLBACK = {                                     // used only when the sanctioned
@@ -94,19 +95,54 @@
     return dflt;
   }
   function writeScalar(key, fallbackKey, value) {
-    let ok = false;
+    // Exactly one backing store is authoritative at a time. When scoped settings
+    // are supported they own the value: a successful write also drops any stale
+    // raw key, so a later downgrade to an older Core cannot resurrect a value the
+    // user has since changed. When a supported scoped write FAILS we deliberately
+    // do not write the raw key either — readScalar() prefers scoped (which returns
+    // a schema default), so the raw value would be unreadable now and misleading
+    // later. Raw keys are written only on Core builds without scoped settings.
     if (settingsSupported) {
+      let ok = false;
       try {
         const res = settings.set(key, value);
         ok = !!(res && typeof res === 'object' ? res.ok === true : res !== false);
       } catch (_) {}
-      // Scoped settings are authoritative when available; writing the raw
-      // fallback key here too would contradict the documented behaviour that
-      // these keys are only used on older Core builds.
-      if (ok) return true;
+      if (ok) { try { localStorage.removeItem(fallbackKey); } catch (_) {} }
+      return ok;
     }
     try { localStorage.setItem(fallbackKey, String(value)); } catch (_) {}
-    return ok || !settingsSupported;
+    return true;
+  }
+
+  // Move pre-scoped-settings raw scalar values into scoped settings exactly once,
+  // mirroring migrateLegacyImage(). Without this, a user upgrading to a Core with
+  // scoped settings silently loses their saved scalars: readScalar() prefers the
+  // scoped value, and Core answers with a schema DEFAULT rather than undefined, so
+  // the raw key is never consulted again.
+  //
+  // Because Core returns a schema default for an unset key, "has the user already
+  // chosen a scoped value?" cannot be answered by reading it. We therefore treat the
+  // raw key as the authority when it exists: it can only exist if this browser ran a
+  // build without scoped settings and the user changed something there, and
+  // writeScalar() deletes it on every successful scoped write. Only drop the raw key
+  // once the scoped write succeeded, so a failure never loses the value.
+  function migrateLegacyScalars() {
+    if (!settingsSupported) return;
+    [['enabled', FALLBACK.enabled, true], ['size', FALLBACK.size, false],
+     ['mobile', FALLBACK.mobile, false]].forEach(function (entry) {
+      const key = entry[0], fallbackKey = entry[1], isBool = entry[2];
+      let raw = null;
+      try { raw = localStorage.getItem(fallbackKey); } catch (_) { return; }
+      if (raw === null) return;
+      const value = isBool ? raw === 'true' : raw;
+      let done = false;
+      try {
+        const res = settings.set(key, value);
+        done = !!(res && typeof res === 'object' ? res.ok === true : res !== false);
+      } catch (_) { done = false; }
+      if (done) { try { localStorage.removeItem(fallbackKey); } catch (_) {} }
+    });
   }
 
   function isEnabled() { return readScalar('enabled', FALLBACK.enabled, false) !== false; }
@@ -589,6 +625,7 @@
     attempt = attempt || 0;
     if (document.getElementById('messages') || document.querySelector(ROW_SELECTOR)) {
       installed = true;
+      migrateLegacyScalars();
       migrateLegacyImage();
       startObserver();
       startReconcile();

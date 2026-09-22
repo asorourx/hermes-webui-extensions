@@ -19,8 +19,10 @@ either extension's storage, and it adds no assistant-avatar path.
   `MutationObserver` — no duplicate nodes, no observer loops.
 - Fully reversible: disabling removes all decoration and the transcript is
   pixel-identical to stock. The enabled state and your image persist across reloads by
-  design, so a reload keeps the decoration; only disabling (or clearing the extension's
-  storage) returns the transcript to stock.
+  design, so a reload keeps the decoration; **disabling** is what returns the transcript
+  to stock. (Clearing the extension's storage removes the uploaded *image* but not the
+  separate enabled setting, so an enabled extension falls back to the placeholder circle
+  rather than going away.)
 
 ## Controls
 
@@ -105,9 +107,10 @@ reconcile:
   `:root`.
 
 The avatar itself is drawn by a `::before` **pseudo-element** in the stylesheet, gated
-on `:root[data-hwx-uav-on]`. User rows carry `content-visibility:auto`, whose paint
-containment clips anything drawn outside the row box, so the avatar is drawn **inside**
-the row and the bubble yields a little width for it (an intentional, small horizontal
+on `:root[data-hwx-uav-on]`. User rows are `align-self:flex-end` inside a column flex
+container, so the row box is shrink-to-fit around the bubble; combined with the row's
+`position:relative`, `left:0` on the pseudo-element lands in the gutter reserved by the
+bubble's `margin-left` (an intentional, small horizontal
 cost). Because the decoration is attribute- and CSS-driven, the observer only has to
 mark newly created user rows; a core `innerHTML` rebuild leaves the decoration intact.
 
@@ -178,9 +181,10 @@ Trusted local code. Disclosed behavior:
 - reads the uploaded image locally (`FileReader`), downscales it via a `<canvas>`, and
   stores a small data-URL
 - stores the image in the sanctioned scoped storage namespace (`permissions.storage.owned`
-  is `true`), so Core's Clear-extension-storage and uninstall actually remove it; it
-  reads `localStorage` only under its own `hermes-ext-user-avatar*` keys (the one-time
-  legacy image migration and the scalar fallbacks on older core)
+  is `true`), so Core's Clear-extension-storage removes it; note that *uninstalling* only
+  removes the extension's files and manifest entry and does **not** clear browser-local
+  data. It reads `localStorage` only under its own `hermes-ext-user-avatar*` keys (the
+  one-time legacy image/scalar migrations and the scalar fallbacks on older core)
 - reads/writes its own scalar settings through `window.hermesExt` when available, with a
   localStorage fallback on older core
 - does **not** call WebUI HTTP APIs, read cookies, contact loopback or external
@@ -196,8 +200,8 @@ ever applied, so a malformed or oversized stored value cannot inject anything.
 
 - User-turn only (assistant avatars are `custom-avatar` / `profile-avatars`).
 - Per-browser (browser-local storage), not synced across devices.
-- Relies on `.msg-row[data-role="user"]` and the user-row `content-visibility` layout;
-  a core rename would need an update (fails harmlessly until then).
+- Relies on `.msg-row[data-role="user"]` and the shrink-to-fit right-aligned user-row
+  layout; a core rename would need an update (fails harmlessly until then).
 - The avatar is the same image for every user turn (single user avatar), by design.
 - When enabled with no image chosen yet, a neutral placeholder circle is shown.
 
@@ -229,8 +233,8 @@ Manual verification (realistic desktop + 390px mobile):
 
 - enabling decorates every current and newly streamed user turn; the assistant avatar
   and message content are unchanged
-- disabling / reload removes all decoration; the disabled transcript is pixel-identical
-  to stock
+- disabling removes all decoration and the disabled transcript is pixel-identical
+  to stock; reload deliberately PRESERVES the enabled state and image
 - a non-image, SVG, or oversized file is rejected with a message, not applied
 - narrow layout follows the Hide / Compact setting; the bubble stays readable at 390px
 - repeated re-renders (streaming, scrolling) do not duplicate nodes or shift the avatar

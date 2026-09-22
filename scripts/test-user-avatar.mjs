@@ -118,6 +118,8 @@ function createHarness({
   legacyImage = null,
   storageWritesFail = false,
   image = null,
+  legacyScalars = null,
+  settingsSchemaDefaults = null,
 } = {}) {
   canvasDraws = [];
   canvasPng = PNG;
@@ -137,10 +139,19 @@ function createHarness({
 
   if (legacyImage) store.set(LEGACY_IMAGE_KEY, legacyImage);
   if (image) extStore.set('image', image);
+  if (legacyScalars) for (const [k, v] of Object.entries(legacyScalars)) store.set(k, String(v));
 
   const settings = settingsSupported ? {
     supported: true,
-    get(key) { return settingsBackend.get(key); },
+    // Real Core answers a SCHEMA DEFAULT for an unset key rather than undefined;
+    // settingsSchemaDefaults models that so the migration path is exercised honestly.
+    get(key) {
+      const v = settingsBackend.get(key);
+      if (v === undefined && settingsSchemaDefaults && key in settingsSchemaDefaults) {
+        return settingsSchemaDefaults[key];
+      }
+      return v;
+    },
     set(key, value) { settingsBackend.set(key, value); return { ok: true }; },
     registerConfigure(fn) { configureHook = fn; },
   } : undefined;
@@ -389,8 +400,9 @@ function panelControl(h, cls) {
     'the raw localStorage key is never written when scoped storage exists');
 }
 {
-  // Core's Settings -> "Clear extension storage" wipes the scoped record; the
-  // image and the decoration must go with it.
+  // Core's Settings -> "Clear extension storage" wipes the scoped IMAGE record.
+  // The separate `enabled` setting is NOT storage, so it survives: the avatar
+  // falls back to the neutral placeholder rather than disappearing.
   const h = createHarness({ image: PNG });
   h.api().setEnabled(true);
   assert.equal(h.api().getImage(), PNG, 'image is read back from scoped storage');
@@ -400,7 +412,9 @@ function panelControl(h, cls) {
   h.api().refresh();
   assert.equal(h.api().getImage(), '', 'clearing extension storage removes the image');
   assert.equal(h.rootEl.style.getPropertyValue('--hwx-uav-img'), 'none',
-    'decoration disappears after Core clears extension storage');
+    'the image custom property is cleared after Core clears extension storage');
+  assert.equal(h.api().isEnabled(), true,
+    'the enabled setting survives a storage clear (placeholder remains, not stock)');
 }
 {
   // Legacy raw-key migration: moved into scoped storage, raw key deleted.
@@ -702,6 +716,43 @@ async function runFile(h, file, { width = 64, height = 64, failRead = false, fai
   assert.equal(h.panel(), null, 'teardown removes the Configure panel');
   assert.equal(core.settleCount, 1, 'teardown settles the pending Configure exactly once');
   assert.equal((h.documentListeners.keydown || []).length, 0, 'teardown unbinds the keydown trap');
+}
+
+// ── upgrade path: raw scalar fallbacks migrate into scoped settings exactly once ──
+// Regression cover for the case where a browser ran an older Core (no scoped
+// settings), the user's choices landed in the raw localStorage keys, and Core is then
+// upgraded. readScalar() prefers scoped settings and real Core answers a schema
+// DEFAULT for an unset key, so without migration the saved values become unreachable.
+{
+  const h = createHarness({
+    legacyScalars: {
+      'hermes-ext-user-avatar-enabled': 'true',
+      'hermes-ext-user-avatar-size': 'large',
+      'hermes-ext-user-avatar-mobile': 'compact',
+    },
+    settingsSchemaDefaults: { enabled: false, size: 'medium', mobile: 'hide' },
+  });
+  assert.equal(h.api().isEnabled(), true,
+    'a pre-upgrade enabled=true survives the move to scoped settings');
+  assert.equal(h.rootEl.style.getPropertyValue('--hwx-uav-size'), '44px',
+    'a pre-upgrade size=large survives the move to scoped settings');
+  assert.equal(h.store.has('hermes-ext-user-avatar-enabled'), false,
+    'the raw enabled key is removed once migrated');
+  assert.equal(h.store.has('hermes-ext-user-avatar-size'), false,
+    'the raw size key is removed once migrated');
+  assert.equal(h.store.has('hermes-ext-user-avatar-mobile'), false,
+    'the raw mobile key is removed once migrated');
+}
+{
+  // A successful scoped write must not leave (or re-create) a raw key, so a later
+  // downgrade cannot resurrect a value the user has since changed. Write the raw key
+  // AFTER install so the one-time migration has already run and cannot be what
+  // removes it — otherwise this assertion passes vacuously.
+  const h = createHarness();
+  h.store.set('hermes-ext-user-avatar-enabled', 'false');
+  h.api().setEnabled(true);
+  assert.equal(h.store.has('hermes-ext-user-avatar-enabled'), false,
+    'a successful scoped write clears any stale raw key');
 }
 
 // ── graceful degrade: no hermesExt settings -> localStorage fallback works ──
