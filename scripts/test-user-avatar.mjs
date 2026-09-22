@@ -271,7 +271,7 @@ function createHarness({
     fileReaders, images,
     api: () => window.HermesUserAvatarExtension,
     configureHook: () => configureHook,
-    failWrites: () => { failSettings = true; failLocal = true; },
+    failWrites: () => { failSettings = true; },
     panel: () => document.getElementById(PANEL_ID),
     flushRafs() {
       const queued = Array.from(rafs.entries());
@@ -540,12 +540,15 @@ async function runFile(h, file, { width = 64, height = 64, failRead = false, fai
 }
 
 // ── CONFIGURE: a refused settings write must not leave a lying control ──────
-// Both stores must refuse for this to be a real failure: the raw localStorage key
-// is a synchronised shadow, so a scoped refusal alone still persists the choice.
-// Without the guard the checkbox/select keeps showing a value that was never
-// stored or applied — a silent, misleading no-op.
+// On a Core WITH scoped settings the scoped store is authoritative: readScalar()
+// prefers it, so a scoped refusal means the requested value is not in effect even
+// though the raw shadow write succeeded. Reporting success there would leave the
+// control displaying a value that was never applied. This case (scoped refused,
+// raw succeeds) is the realistic one — a quota failure hitting only the scoped
+// store — so it is what the guard has to handle.
 {
-  const h = createHarness({ settingsWritesFail: true, localWritesFail: true });
+  const h = createHarness({ settingsWritesFail: true, localWritesFail: false,
+    settingsSchemaDefaults: { enabled: false, size: 'medium', mobile: 'hide' } });
   const core = coreConfigure(h);
   core.invoke();
   const box = h.panel().querySelector('input:not([type="file"])');
@@ -562,7 +565,7 @@ async function runFile(h, file, { width = 64, height = 64, failRead = false, fai
   // The select must also revert. Enable first (via the API, which bypasses the
   // panel) so a real size is applied and "unchanged" is a meaningful assertion
   // rather than trivially true against an unset custom property.
-  const h2 = createHarness();
+  const h2 = createHarness({ settingsSchemaDefaults: { enabled: false, size: 'medium', mobile: 'hide' } });
   const core2 = coreConfigure(h2);
   h2.api().setEnabled(true);
   core2.invoke();

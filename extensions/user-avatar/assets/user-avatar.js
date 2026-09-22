@@ -95,16 +95,22 @@
     return dflt;
   }
   // Mirror write: the scoped setting is authoritative when supported, and the raw
-  // localStorage key is kept as a synchronised shadow copy so an older Core (which
-  // has no scoped settings) still reads the user's current choice. Keeping both in
-  // step is what makes this safe -- there is never an orphaned raw value to
-  // reconcile, so no migration or conflict resolution is required.
+  // localStorage key is kept as a shadow copy so an older Core (which has no scoped
+  // settings) still reads the user's current choice from the same browser.
   //
-  // Returns whether the value is actually retrievable afterwards. readScalar()
-  // falls back to the raw key when the scoped store has no value, so a refused
-  // scoped write whose shadow copy succeeded has still persisted the choice;
-  // reporting that as a failure would be wrong. Only a write that reached neither
-  // store is a real failure.
+  // Known limitation, deliberately not papered over: the mirror is one-way and
+  // unversioned. Core's own native Save/Reset writes the scoped store directly
+  // without going through here, so after such a change the shadow is stale, and a
+  // later downgrade to a Core without scoped settings would read that stale value.
+  // Resolving it properly needs a versioned migration protocol; the extension does
+  // not claim downgrade fidelity, and the README says so.
+  //
+  // Returns whether the value is authoritative afterwards. On a Core with scoped
+  // settings that is the scoped result alone: readScalar() prefers the scoped
+  // store, so a scoped refusal means the requested value will NOT be read back
+  // even if the raw shadow write succeeded, and reporting success would leave the
+  // Configure control showing a value that is not in effect. Only when scoped
+  // settings are unavailable is the raw key authoritative.
   function writeScalar(key, fallbackKey, value) {
     let ok = false;
     if (settingsSupported) {
@@ -113,9 +119,8 @@
         ok = !!(res && typeof res === 'object' ? res.ok === true : res !== false);
       } catch (_) {}
     }
-    let rawOk = false;
-    try { localStorage.setItem(fallbackKey, String(value)); rawOk = true; } catch (_) {}
-    return ok || rawOk;
+    try { localStorage.setItem(fallbackKey, String(value)); } catch (_) {}
+    return ok || !settingsSupported;
   }
 
 
